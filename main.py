@@ -63,6 +63,11 @@ async def handle_webhook(request: web.Request):
             audio_path = payload.get("audioFilePath")
             content_type = "voice" if audio_path else "text"
 
+            # Guard: ignore any echo of bot responses or system status prefixes
+            if text_content.startswith(("🤖", "⏳", "⚠️", "🗣️", "🎙️", "✍️", "📁")):
+                print(f"[Orchestrator] Ignoring echo of bot text: '{text_content[:40]}...'")
+                return web.json_response({"status": "ignored_bot_echo"})
+
             # 1. Voice Note Transcription
             if audio_path:
                 print(f"[Orchestrator] Received voice note at: {audio_path}")

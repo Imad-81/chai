@@ -12,6 +12,7 @@ import pino from 'pino';
 import fs from 'fs';
 import path from 'path';
 import http from 'http';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -28,6 +29,31 @@ if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR, { recursive: true });
 
 const PYTHON_WEBHOOK_URL = process.env.PYTHON_WEBHOOK_URL || 'http://127.0.0.1:5055/webhook';
 const BRIDGE_PORT = parseInt(process.env.BRIDGE_PORT || '5056', 10);
+
+// Suppress verbose libsignal internal crypto session logs that clutter the terminal
+const originalConsoleInfo = console.info;
+console.info = function (...args) {
+    if (typeof args[0] === 'string' && (
+        args[0].startsWith('Closing session') ||
+        args[0].startsWith('Removing old closed session') ||
+        args[0].startsWith('Opening session')
+    )) {
+        return;
+    }
+    originalConsoleInfo.apply(console, args);
+};
+
+const originalConsoleWarn = console.warn;
+console.warn = function (...args) {
+    if (typeof args[0] === 'string' && (
+        args[0].startsWith('Decrypted message with closed session') ||
+        args[0].startsWith('Closing open session in favor of incoming prekey bundle') ||
+        args[0].startsWith('Session already closed')
+    )) {
+        return;
+    }
+    originalConsoleWarn.apply(console, args);
+};
 
 let sock = null;
 let connectionStatus = 'initializing';
@@ -93,7 +119,7 @@ async function startSock() {
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const { version } = await fetchLatestBaileysVersion();
     const pairingNumber = process.env.PAIRING_NUMBER ? process.env.PAIRING_NUMBER.replace(/[^0-9]/g, '') : null;
-    const logger = pino({ level: 'silent' });
+    const logger = pino({ level: 'warn' });
 
     sock = makeWASocket({
         version,
@@ -110,11 +136,15 @@ async function startSock() {
         fireInitQueries: true,
         printQRInTerminal: false,
         generateHighQualityLinkPreview: false,
+        emitOwnEvents: false,
         getMessage: async (key) => {
             // Must return proto.IMessage (the .message field), not the full WAMessage.
             // WhatsApp server calls this during retry/re-delivery requests.
             const stored = messageStore.get(key.id);
-            if (stored) return stored;
+            if (stored) {
+                if (stored.message) return stored.message;
+                return stored;
+            }
             return undefined;
         }
     });
@@ -199,42 +229,57 @@ async function startSock() {
     });
 
     sock.ev.on('messages.upsert', async ({ messages, type }) => {
-        if (type !== 'notify') return;
+        // 'notify' = new real-time message pushed to device
+        // 'append' = offline catchup message from primary device delivered to companion
+        if (type !== 'notify' && type !== 'append') return;
 
-        for (const msg of messages) {
+        for (const msg of (messages || [])) {
             try {
-                if (msg.key?.id && msg.message) {
-                    messageStore.set(msg.key.id, msg.message);
+                const msgId = msg.key?.id;
+                const senderJid = msg.key?.remoteJid;
+                const isFromMe = msg.key?.fromMe;
+
+                // 1. Immediately drop any message sent by the bot (by ID prefix or set lookup)
+                if (msgId && (msgId.startsWith('BOT_') || botSentMessageIds.has(msgId))) {
+                    continue;
+                }
+
+                console.log(`[Bridge] UPSERT: type=${type} id=${msgId} fromMe=${isFromMe} jid=${senderJid} hasMessage=${!!msg.message} stub=${msg.messageStubType || 'none'}`);
+
+                if (msg.messageStubType) {
+                    console.warn(`[Bridge] Message stub: type=${msg.messageStubType} params=${JSON.stringify(msg.messageStubParameters)}`);
+                }
+
+                if (!msg.message) continue;
+
+                // Cache incoming message for retries
+                if (msgId && msg.message) {
+                    messageStore.set(msgId, msg.message);
                     if (messageStore.size > 2000) {
                         const firstKey = messageStore.keys().next().value;
                         messageStore.delete(firstKey);
                     }
                 }
 
-                if (!msg.message) continue;
-                const msgId = msg.key.id;
-
-                // Ignore messages sent by the bot itself
-                if (botSentMessageIds.has(msgId)) {
-                    continue;
-                }
-
-                const senderJid = msg.key.remoteJid;
-                const isFromMe = msg.key.fromMe;
-
-                // Only process messages from yourself (Note to Self).
-                // remoteJid for a self-chat is your own phone number @s.whatsapp.net.
-                // Exclude status broadcasts explicitly.
+                // Exclude status broadcasts
                 if (senderJid === 'status@broadcast') continue;
 
                 const myPhone = myJid ? myJid.split('@')[0] : null;
-                const isSelfNote = isFromMe && myPhone && (
-                    senderJid === myJid ||
-                    senderJid.startsWith(myPhone)
-                );
+                const myLid = sock.user?.lid ? sock.user.lid.split('@')[0].split(':')[0] : null;
 
-                if (!isSelfNote) {
-                    // Not a note-to-self, ignore for security
+                // Allow messages where remoteJid belongs to our own number or LID (Note to Self).
+                // Primary device (iPhone) or companion devices (Mac) sending to Note to Self.
+                const isOurNumber = (myPhone && (
+                    senderJid === myJid ||
+                    senderJid.startsWith(myPhone) ||
+                    senderJid.split('@')[0] === myPhone
+                )) || (myLid && (
+                    senderJid.startsWith(myLid) ||
+                    senderJid.split('@')[0] === myLid
+                ));
+
+                if (!isOurNumber) {
+                    console.log(`[Bridge] Ignored (not our number/LID): senderJid=${senderJid} myPhone=${myPhone} myLid=${myLid}`);
                     continue;
                 }
 
@@ -263,7 +308,23 @@ async function startSock() {
                     textContent = msg.message[messageType]?.caption || '';
                 }
 
-                if (!textContent && !audioFilePath) continue;
+                const trimmedText = textContent ? textContent.trim() : '';
+                if (!trimmedText && !audioFilePath) continue;
+
+                // 2. Extra guard: ignore if text matches known bot prefixes
+                if (trimmedText && (
+                    trimmedText.startsWith('🤖') ||
+                    trimmedText.startsWith('⏳') ||
+                    trimmedText.startsWith('⚠️') ||
+                    trimmedText.startsWith('🎙️') ||
+                    trimmedText.startsWith('🗣️') ||
+                    trimmedText.startsWith('✍️') ||
+                    trimmedText.startsWith('📁')
+                )) {
+                    continue;
+                }
+
+                console.log(`[Bridge] MSG => fromMe=${isFromMe} senderJid=${senderJid} type=${messageType} text="${trimmedText.substring(0, 50)}"`);
 
                 const effectiveSender = (senderJid && !senderJid.endsWith('@lid')) ? senderJid : myJid;
                 console.log(`[Bridge] Received incoming command from user (Type: ${messageType})`);
@@ -272,7 +333,7 @@ async function startSock() {
                     msgId,
                     senderJid: effectiveSender,
                     messageType,
-                    textContent,
+                    textContent: trimmedText,
                     audioFilePath,
                     timestamp: msg.messageTimestamp
                 });
@@ -307,19 +368,21 @@ const server = http.createServer(async (req, res) => {
                     return;
                 }
 
+                // Pre-generate unique message ID starting with BOT_ so upsert can never process it
+                const msgId = 'BOT_' + Date.now() + '_' + crypto.randomBytes(8).toString('hex').toUpperCase();
+                botSentMessageIds.add(msgId);
+                messageStore.set(msgId, { conversation: text });
+
                 // Send typing indicator
                 await sock.sendPresenceUpdate('composing', targetJid);
-                const sent = await sock.sendMessage(targetJid, { text });
-                if (sent?.key?.id) {
-                    botSentMessageIds.add(sent.key.id);
-                    if (sent.message) {
-                        messageStore.set(sent.key.id, sent.message);
-                    }
+                const sent = await sock.sendMessage(targetJid, { text }, { messageId: msgId });
+                if (sent?.message) {
+                    messageStore.set(msgId, sent.message);
                 }
                 await sock.sendPresenceUpdate('paused', targetJid);
 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true, messageId: sent?.key?.id }));
+                res.end(JSON.stringify({ success: true, messageId: msgId }));
             } catch (err) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));
@@ -351,22 +414,22 @@ const server = http.createServer(async (req, res) => {
                 const resolvedMime = mimetype || 'application/pdf';
                 const displayName = fileName || path.basename(filePath);
 
+                const msgId = 'BOT_' + Date.now() + '_' + crypto.randomBytes(8).toString('hex').toUpperCase();
+                botSentMessageIds.add(msgId);
+
                 const sent = await sock.sendMessage(targetJid, {
                     document: fileBuffer,
                     mimetype: resolvedMime,
                     fileName: displayName,
                     caption: caption || ''
-                });
+                }, { messageId: msgId });
 
-                if (sent?.key?.id) {
-                    botSentMessageIds.add(sent.key.id);
-                    if (sent.message) {
-                        messageStore.set(sent.key.id, sent.message);
-                    }
+                if (sent?.message) {
+                    messageStore.set(msgId, sent.message);
                 }
 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true, messageId: sent?.key?.id }));
+                res.end(JSON.stringify({ success: true, messageId: msgId }));
             } catch (err) {
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));

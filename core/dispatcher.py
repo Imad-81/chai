@@ -1,5 +1,6 @@
 import json
 import re
+import asyncio
 from typing import Dict, Any, Optional
 import ollama
 from config import DISPATCHER_MODEL
@@ -74,13 +75,15 @@ class Dispatcher:
         messages.append({"role": "user", "content": user_text})
 
         try:
-            res = ollama.chat(
+            res = await asyncio.to_thread(
+                ollama.chat,
                 model=DISPATCHER_MODEL,
                 format="json",
                 messages=messages,
                 options={"temperature": 0.1}
             )
             raw_output = res['message']['content'].strip()
+            print(f"[Dispatcher] Raw intent: {raw_output[:120]}")
             intent = json.loads(raw_output)
             if not isinstance(intent, dict):
                 intent = {"action": "CHAT", "reply": str(intent)}
@@ -117,7 +120,9 @@ Guidelines:
 - Use bullet points and bold keywords for readability.
 - Write in academic, professional tone."""
 
-            doc_res = ollama.chat(
+            print(f"[Dispatcher] Writing assignment: {title}")
+            doc_res = await asyncio.to_thread(
+                ollama.chat,
                 model=DISPATCHER_MODEL,
                 messages=[{"role": "user", "content": doc_prompt}],
                 options={"temperature": 0.4}
@@ -172,7 +177,9 @@ Instructions:
 Apply the requested changes to the content. Maintain the overall structure and academic quality.
 Output the complete revised markdown text."""
 
-            rev_res = ollama.chat(
+            print(f"[Dispatcher] Revising assignment: {latest.title}")
+            rev_res = await asyncio.to_thread(
+                ollama.chat,
                 model=DISPATCHER_MODEL,
                 messages=[{"role": "user", "content": revise_prompt}],
                 options={"temperature": 0.3}
@@ -225,7 +232,11 @@ Output the complete revised markdown text."""
                 chat_messages = [{"role": "system", "content": "You are a helpful personal assistant on WhatsApp. Answer concisely."}]
                 chat_messages.extend(history)
                 chat_messages.append({"role": "user", "content": user_text})
-                chat_res = ollama.chat(model=DISPATCHER_MODEL, messages=chat_messages)
+                chat_res = await asyncio.to_thread(
+                    ollama.chat,
+                    model=DISPATCHER_MODEL,
+                    messages=chat_messages
+                )
                 reply = chat_res['message']['content'].strip()
 
             return {"type": "text", "text": reply}
