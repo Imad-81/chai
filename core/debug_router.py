@@ -2,6 +2,7 @@ import time
 import os
 import shutil
 import asyncio
+from pathlib import Path
 from typing import Dict, Any, List, Optional
 import httpx
 from sqlmodel import select, func
@@ -266,9 +267,11 @@ class DebugRouter:
                         f"• *Exit Code:* {last.get('returncode')}\n"
                         f"• *Time:* {last.get('timestamp')}"
                     )
+                can_term, term_bin = AntigravityRunner.can_spawn_terminal()
+                term_info = f"• *Live Screen Terminal:* {'✅ ' + Path(term_bin).name if can_term else '❌ Headless'}\n"
                 return {
                     "type": "text",
-                    "text": f"💤 *Antigravity is Idle*\n{last_str}"
+                    "text": f"💤 *Antigravity is Idle*\n{term_info}{last_str}"
                 }
 
     @classmethod

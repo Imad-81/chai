@@ -108,8 +108,10 @@ class Dispatcher:
         recent_history = MemoryManager.get_recent_history(limit=4)
         synthesized_prompt = ContextEngine.synthesize_multi_turn_task(task_prompt, recent_history)
 
+        can_gui, _ = AntigravityRunner.can_spawn_terminal()
+        mode_note = " (🖥️ terminal opened on your screen)" if can_gui else ""
         if status_updater:
-            status_updater(f"🤖 Antigravity CLI dispatched in `{active_path}`...")
+            status_updater(f"🤖 Antigravity CLI dispatched in `{active_path}`{mode_note}...")
 
         output = await AntigravityRunner.run_prompt(
             prompt=synthesized_prompt,
@@ -146,9 +148,14 @@ Guidelines:
             ollama.chat,
             model=DISPATCHER_MODEL,
             messages=[{"role": "user", "content": doc_prompt}],
-            options={"temperature": 0.4, "num_predict": 1024}
+            options={"temperature": 0.4, "num_predict": 1024, "num_ctx": 4096}
         )
-        markdown_content = doc_res['message']['content'].strip()
+        msg_obj = doc_res.get('message', {})
+        markdown_content = (msg_obj.get('content') or getattr(msg_obj, 'content', '') or '').strip()
+        if not markdown_content:
+            thinking = getattr(msg_obj, 'thinking', None) or (msg_obj.get('thinking') if isinstance(msg_obj, dict) else None)
+            if thinking:
+                markdown_content = str(thinking).strip()
 
         if status_updater:
             status_updater("📄 Compiling PDF document with styling...")
@@ -208,9 +215,14 @@ Output the complete revised markdown text."""
             ollama.chat,
             model=DISPATCHER_MODEL,
             messages=[{"role": "user", "content": revise_prompt}],
-            options={"temperature": 0.3, "num_predict": 1024}
+            options={"temperature": 0.3, "num_predict": 1024, "num_ctx": 4096}
         )
-        revised_markdown = rev_res['message']['content'].strip()
+        msg_obj = rev_res.get('message', {})
+        revised_markdown = (msg_obj.get('content') or getattr(msg_obj, 'content', '') or '').strip()
+        if not revised_markdown:
+            thinking = getattr(msg_obj, 'thinking', None) or (msg_obj.get('thinking') if isinstance(msg_obj, dict) else None)
+            if thinking:
+                revised_markdown = str(thinking).strip()
 
         new_version = latest.version + 1
         new_pdf_path = PDFCompiler.compile_markdown_to_pdf(
@@ -256,10 +268,16 @@ Output the complete revised markdown text."""
             messages=chat_messages,
             options={
                 "temperature": 0.4,
-                "num_predict": 384
+                "num_predict": 768,
+                "num_ctx": 4096
             }
         )
-        reply = chat_res['message']['content'].strip()
+        msg_obj = chat_res.get('message', {})
+        reply = (msg_obj.get('content') or getattr(msg_obj, 'content', '') or '').strip()
+        if not reply:
+            thinking = getattr(msg_obj, 'thinking', None) or (msg_obj.get('thinking') if isinstance(msg_obj, dict) else None)
+            if thinking:
+                reply = str(thinking).strip()
         return cls._format_result({"type": "text", "text": reply}, "CHAT", pipeline_start)
 
     @classmethod

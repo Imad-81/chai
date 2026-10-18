@@ -31,14 +31,17 @@ BRIDGE_URL = f"http://127.0.0.1:{BRIDGE_PORT}"
 
 # Ollama & Models
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://127.0.0.1:11434")
-DISPATCHER_MODEL = os.getenv("DISPATCHER_MODEL", "qwen2.5-coder:7b")
+DISPATCHER_MODEL = os.getenv("DISPATCHER_MODEL", "gemma4:12b")
+
 
 # Whisper
 WHISPER_MODEL_SIZE = os.getenv("WHISPER_MODEL_SIZE", "base.en")
 WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 
-# Antigravity CLI
+# Antigravity CLI & Visible Terminal
 AGY_BINARY = os.getenv("AGY_BINARY", str(Path.home() / ".local" / "bin" / "agy"))
+AGY_SPAWN_TERMINAL = os.getenv("AGY_SPAWN_TERMINAL", "true").lower() in ("true", "1", "yes")
+AGY_TERMINAL_EMULATOR = os.getenv("AGY_TERMINAL_EMULATOR", "gnome-terminal")
 PROJECTS_ROOT = Path(os.getenv("PROJECTS_ROOT", str(Path.home() / "projects")))
 DEFAULT_WORKSPACE = str(BASE_DIR)
 

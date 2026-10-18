@@ -45,7 +45,7 @@ Send voice memos or text messages from Telegram on your phone or desktop to mana
 - [Ollama](https://ollama.com/) running locally:
   ```bash
   ollama serve
-  ollama run qwen2.5-coder:7b
+  ollama run gemma4:12b
   ```
 - (Optional) [Antigravity CLI](https://github.com/google/antigravity) (`agy`) installed in your PATH.
 
