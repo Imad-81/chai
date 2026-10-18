@@ -33,6 +33,8 @@ Classify the user's message into one of these action types:
 
 Respond ONLY with a valid JSON object matching one of the schemas above. No preamble, no markdown fences."""
 
+from core.triage import FastTriage
+
 class Dispatcher:
     @classmethod
     async def process_user_input(
@@ -49,79 +51,80 @@ class Dispatcher:
         """
         pipeline_start = time.perf_counter()
 
-        # 0. Intercept Debug Commands immediately (zero LLM latency)
+        # 0. Intercept Debug Commands immediately (< 1ms)
         if DebugRouter.is_debug_command(user_text):
             return await DebugRouter.handle_debug_command(user_text, sender_jid)
 
-        projects_list = ", ".join(WorkspaceManager.list_available_projects())
-        active_ws = MemoryManager.get_active_workspace()
+        # 1. Tier 0: Fast-Path Rule & Regex Triage (< 1ms)
+        fast_match = FastTriage.match_fast_path(user_text)
+        if fast_match:
+            action = fast_match.get("action")
+            if action in ["FAST_CHAT", "DIRECT_REPLY"]:
+                res_dict = {"type": "text", "text": fast_match.get("reply", "")}
+                return cls._format_result(res_dict, action, pipeline_start)
+            elif action == "ANTIGRAVITY":
+                return await cls._execute_antigravity(fast_match.get("task", user_text), status_updater, pipeline_start)
+            elif action == "ASSIGNMENT_CREATE":
+                return await cls._execute_assignment_create(
+                    fast_match.get("title", "Academic Assignment"),
+                    fast_match.get("topic", user_text),
+                    user_text,
+                    status_updater,
+                    pipeline_start
+                )
+            elif action == "ASSIGNMENT_REVISE":
+                return await cls._execute_assignment_revise(
+                    fast_match.get("changes", user_text),
+                    user_text,
+                    status_updater,
+                    pipeline_start
+                )
 
-        # Check for direct explicit commands first for instant speed
-        text_lower = user_text.strip().lower()
-        if text_lower in ["projects", "list projects", "ls projects"]:
-            available = "\n".join(f"• `{p}`" for p in WorkspaceManager.list_available_projects())
-            current = WorkspaceManager.get_current_workspace_info()
-            return {"type": "text", "text": f"{current}\n\n📁 **Available Projects:**\n{available}"}
+        # 2. Tier 1: Micro-Classifier for Ambiguous Requests (~180ms)
+        intent_cat = await FastTriage.classify_ambiguous(user_text)
+        print(f"[Dispatcher] Tier-1 Triage classified '{user_text[:40]}' -> {intent_cat}")
 
-        if text_lower.startswith("switch to ") or text_lower.startswith("cd "):
-            target = text_lower.replace("switch to ", "").replace("cd ", "").strip()
-            success, msg = WorkspaceManager.switch_workspace(target)
-            return {"type": "text", "text": msg}
+        if intent_cat == "ANTIGRAVITY":
+            return await cls._execute_antigravity(user_text, status_updater, pipeline_start)
+        elif intent_cat == "ASSIGNMENT_CREATE":
+            return await cls._execute_assignment_create("Academic Assignment", user_text, user_text, status_updater, pipeline_start)
+        elif intent_cat == "SWITCH_WORKSPACE":
+            return cls._format_result({"type": "text", "text": WorkspaceManager.get_current_workspace_info()}, "WORKSPACE", pipeline_start)
 
-        if text_lower in ["workspace", "pwd"]:
-            return {"type": "text", "text": WorkspaceManager.get_current_workspace_info()}
+        # 3. Default: Single-Pass Direct Conversational Chat (< 2s)
+        return await cls._execute_single_pass_chat(user_text, pipeline_start)
+    @classmethod
+    async def _execute_antigravity(
+        cls, 
+        task_prompt: str, 
+        status_updater: Optional[Any], 
+        pipeline_start: float
+    ) -> Dict[str, Any]:
+        active_path = MemoryManager.get_active_workspace()
+        if status_updater:
+            status_updater(f"🤖 Antigravity CLI dispatched in `{active_path}`...")
 
-        # Intent classification via local Ollama
-        system_prompt = (
-            SYSTEM_ROUTER_PROMPT
-            .replace("{projects_list}", projects_list)
-            .replace("{active_workspace}", active_ws)
+        output = await AntigravityRunner.run_prompt(
+            prompt=task_prompt,
+            workspace_dir=active_path,
+            timeout=300,
+            status_callback=status_updater
         )
+        return cls._format_result({"type": "text", "text": output}, "ANTIGRAVITY", pipeline_start)
 
-        # Fetch recent conversation context for multi-turn intent resolution
-        recent_history = MemoryManager.get_recent_history(limit=4)
-        messages = [{"role": "system", "content": system_prompt}]
-        for turn in recent_history:
-            messages.append({"role": turn["role"], "content": turn["content"]})
-        messages.append({"role": "user", "content": user_text})
+    @classmethod
+    async def _execute_assignment_create(
+        cls, 
+        title: str, 
+        topic: str, 
+        user_text: str, 
+        status_updater: Optional[Any], 
+        pipeline_start: float
+    ) -> Dict[str, Any]:
+        if status_updater:
+            status_updater(f"✍️ Researching and writing assignment: *{title}*...")
 
-        try:
-            res = await asyncio.to_thread(
-                ollama.chat,
-                model=DISPATCHER_MODEL,
-                format="json",
-                messages=messages,
-                options={"temperature": 0.1}
-            )
-            raw_output = res['message']['content'].strip()
-            print(f"[Dispatcher] Raw intent: {raw_output[:120]}")
-            intent = json.loads(raw_output)
-            if not isinstance(intent, dict):
-                intent = {"action": "CHAT", "reply": str(intent)}
-        except Exception as e:
-            print(f"[Dispatcher] Intent parsing error ({e}), defaulting to CHAT: {raw_output if 'raw_output' in locals() else ''}")
-            intent = {"action": "CHAT", "reply": ""}
-
-        action = intent.get("action", "CHAT")
-
-        # 1. SWITCH WORKSPACE
-        if action == "SWITCH_WORKSPACE":
-            target = intent.get("target", "").strip()
-            if not target:
-                return {"type": "text", "text": WorkspaceManager.get_current_workspace_info()}
-            success, msg = WorkspaceManager.switch_workspace(target)
-            return {"type": "text", "text": msg}
-
-        # 2. CREATE ASSIGNMENT & COMPILE PDF
-        elif action == "ASSIGNMENT_CREATE":
-            title = intent.get("title", "Academic Assignment")
-            topic = intent.get("topic", user_text)
-
-            if status_updater:
-                status_updater(f"✍️ Researching and writing assignment: *{title}*...")
-
-            # Generate deep assignment markdown using the model
-            doc_prompt = f"""You are an expert academic tutor and researcher. Write a comprehensive, thorough academic assignment/paper.
+        doc_prompt = f"""You are an expert academic tutor and researcher. Write a comprehensive, thorough academic assignment/paper.
 Title: {title}
 Requirements: {topic}
 
@@ -131,52 +134,56 @@ Guidelines:
 - Use bullet points and bold keywords for readability.
 - Write in academic, professional tone."""
 
-            print(f"[Dispatcher] Writing assignment: {title}")
-            doc_res = await asyncio.to_thread(
-                ollama.chat,
-                model=DISPATCHER_MODEL,
-                messages=[{"role": "user", "content": doc_prompt}],
-                options={"temperature": 0.4}
-            )
-            markdown_content = doc_res['message']['content'].strip()
+        print(f"[Dispatcher] Writing assignment: {title}")
+        doc_res = await asyncio.to_thread(
+            ollama.chat,
+            model=DISPATCHER_MODEL,
+            messages=[{"role": "user", "content": doc_prompt}],
+            options={"temperature": 0.4, "num_predict": 1024}
+        )
+        markdown_content = doc_res['message']['content'].strip()
 
-            if status_updater:
-                status_updater("📄 Compiling PDF document with styling...")
+        if status_updater:
+            status_updater("📄 Compiling PDF document with styling...")
 
-            pdf_path = PDFCompiler.compile_markdown_to_pdf(
-                title=title, 
-                markdown_text=markdown_content,
-                filename_prefix=title
-            )
+        pdf_path = PDFCompiler.compile_markdown_to_pdf(
+            title=title, 
+            markdown_text=markdown_content,
+            filename_prefix=title
+        )
 
-            # Save in memory
-            MemoryManager.save_assignment(
-                title=title,
-                prompt=user_text,
-                markdown_content=markdown_content,
-                pdf_path=pdf_path,
-                version=1
-            )
+        MemoryManager.save_assignment(
+            title=title,
+            prompt=user_text,
+            markdown_content=markdown_content,
+            pdf_path=pdf_path,
+            version=1
+        )
 
-            res_dict = {
-                "type": "file",
-                "filePath": pdf_path,
-                "fileName": f"{title.replace(' ', '_')}.pdf",
-                "caption": f"✅ Completed assignment: *{title}*\nAttached PDF compiled and delivered."
-            }
-            return cls._format_result(res_dict, action, pipeline_start)
+        res_dict = {
+            "type": "file",
+            "filePath": pdf_path,
+            "fileName": f"{title.replace(' ', '_')}.pdf",
+            "caption": f"✅ Completed assignment: *{title}*\nAttached PDF compiled and delivered."
+        }
+        return cls._format_result(res_dict, "ASSIGNMENT_CREATE", pipeline_start)
 
-        # 3. REVISE ASSIGNMENT & COMPILE UPDATED PDF
-        elif action == "ASSIGNMENT_REVISE":
-            latest = MemoryManager.get_latest_assignment()
-            if not latest:
-                return {"type": "text", "text": "I don't have a previous assignment in memory to revise. Would you like me to create a new one?"}
+    @classmethod
+    async def _execute_assignment_revise(
+        cls, 
+        changes: str, 
+        user_text: str, 
+        status_updater: Optional[Any], 
+        pipeline_start: float
+    ) -> Dict[str, Any]:
+        latest = MemoryManager.get_latest_assignment()
+        if not latest:
+            return {"type": "text", "text": "I don't have a previous assignment in memory to revise. Would you like me to create a new one?"}
 
-            changes = intent.get("changes", user_text)
-            if status_updater:
-                status_updater(f"📝 Applying revisions to *{latest.title}* (v{latest.version + 1})...")
+        if status_updater:
+            status_updater(f"📝 Applying revisions to *{latest.title}* (v{latest.version + 1})...")
 
-            revise_prompt = f"""You are revising an existing academic assignment.
+        revise_prompt = f"""You are revising an existing academic assignment.
 Original Title: {latest.title}
 
 Current Content:
@@ -189,70 +196,63 @@ Instructions:
 Apply the requested changes to the content. Maintain the overall structure and academic quality.
 Output the complete revised markdown text."""
 
-            print(f"[Dispatcher] Revising assignment: {latest.title}")
-            rev_res = await asyncio.to_thread(
-                ollama.chat,
-                model=DISPATCHER_MODEL,
-                messages=[{"role": "user", "content": revise_prompt}],
-                options={"temperature": 0.3}
-            )
-            revised_markdown = rev_res['message']['content'].strip()
+        print(f"[Dispatcher] Revising assignment: {latest.title}")
+        rev_res = await asyncio.to_thread(
+            ollama.chat,
+            model=DISPATCHER_MODEL,
+            messages=[{"role": "user", "content": revise_prompt}],
+            options={"temperature": 0.3, "num_predict": 1024}
+        )
+        revised_markdown = rev_res['message']['content'].strip()
 
-            new_version = latest.version + 1
-            new_pdf_path = PDFCompiler.compile_markdown_to_pdf(
-                title=f"{latest.title} (v{new_version})",
-                markdown_text=revised_markdown,
-                filename_prefix=f"{latest.title}_v{new_version}"
-            )
+        new_version = latest.version + 1
+        new_pdf_path = PDFCompiler.compile_markdown_to_pdf(
+            title=f"{latest.title} (v{new_version})",
+            markdown_text=revised_markdown,
+            filename_prefix=f"{latest.title}_v{new_version}"
+        )
 
-            MemoryManager.save_assignment(
-                title=latest.title,
-                prompt=user_text,
-                markdown_content=revised_markdown,
-                pdf_path=new_pdf_path,
-                version=new_version
-            )
+        MemoryManager.save_assignment(
+            title=latest.title,
+            prompt=user_text,
+            markdown_content=revised_markdown,
+            pdf_path=new_pdf_path,
+            version=new_version
+        )
 
-            res_dict = {
-                "type": "file",
-                "filePath": new_pdf_path,
-                "fileName": f"{latest.title.replace(' ', '_')}_v{new_version}.pdf",
-                "caption": f"✅ Updated *{latest.title}* to version {new_version}.\nChanges applied."
+        res_dict = {
+            "type": "file",
+            "filePath": new_pdf_path,
+            "fileName": f"{latest.title.replace(' ', '_')}_v{new_version}.pdf",
+            "caption": f"✅ Updated *{latest.title}* to version {new_version}.\nChanges applied."
+        }
+        return cls._format_result(res_dict, "ASSIGNMENT_REVISE", pipeline_start)
+
+    @classmethod
+    async def _execute_single_pass_chat(
+        cls, 
+        user_text: str, 
+        pipeline_start: float
+    ) -> Dict[str, Any]:
+        """Single-pass chat completion without redundant intent routing (TTFT < 800ms)."""
+        history = MemoryManager.get_recent_history(limit=4)
+        chat_messages = [
+            {"role": "system", "content": "You are Chai, a helpful personal Linux assistant on Telegram. Answer concisely and accurately."}
+        ]
+        chat_messages.extend(history)
+        chat_messages.append({"role": "user", "content": user_text})
+
+        chat_res = await asyncio.to_thread(
+            ollama.chat,
+            model=DISPATCHER_MODEL,
+            messages=chat_messages,
+            options={
+                "temperature": 0.4,
+                "num_predict": 384
             }
-            return cls._format_result(res_dict, action, pipeline_start)
-
-        # 4. ANTIGRAVITY TASK (Code editing, debugging, terminal, browser)
-        elif action == "ANTIGRAVITY":
-            task_prompt = intent.get("task", user_text)
-            active_path = MemoryManager.get_active_workspace()
-
-            if status_updater:
-                status_updater(f"🤖 Antigravity CLI dispatched in `{active_path}`...")
-
-            output = await AntigravityRunner.run_prompt(
-                prompt=task_prompt,
-                workspace_dir=active_path,
-                timeout=300
-            )
-            return cls._format_result({"type": "text", "text": output}, action, pipeline_start)
-
-        # 5. CHAT (Direct conversational answer)
-        else:
-            reply = intent.get("reply", "")
-            if not reply:
-                # Fallback to direct chat with recent history
-                history = MemoryManager.get_recent_history(limit=4)
-                chat_messages = [{"role": "system", "content": "You are a helpful personal assistant on Telegram. Answer concisely."}]
-                chat_messages.extend(history)
-                chat_messages.append({"role": "user", "content": user_text})
-                chat_res = await asyncio.to_thread(
-                    ollama.chat,
-                    model=DISPATCHER_MODEL,
-                    messages=chat_messages
-                )
-                reply = chat_res['message']['content'].strip()
-
-            return cls._format_result({"type": "text", "text": reply}, action, pipeline_start)
+        )
+        reply = chat_res['message']['content'].strip()
+        return cls._format_result({"type": "text", "text": reply}, "CHAT", pipeline_start)
 
     @classmethod
     def _format_result(cls, result: Dict[str, Any], action: str, start_time: float) -> Dict[str, Any]:

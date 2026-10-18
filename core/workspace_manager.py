@@ -5,16 +5,28 @@ from typing import List, Optional, Tuple
 from config import PROJECTS_ROOT
 from core.memory import MemoryManager
 
+import time
+
 class WorkspaceManager:
-    @staticmethod
-    def list_available_projects() -> List[str]:
+    _cached_projects: List[str] = []
+    _cache_time: float = 0.0
+    _CACHE_TTL: float = 30.0
+
+    @classmethod
+    def list_available_projects(cls) -> List[str]:
+        now = time.time()
+        if cls._cached_projects and (now - cls._cache_time < cls._CACHE_TTL):
+            return cls._cached_projects
+
         if not PROJECTS_ROOT.exists():
             return []
         projects = []
         for item in PROJECTS_ROOT.iterdir():
             if item.is_dir() and not item.name.startswith("."):
                 projects.append(item.name)
-        return sorted(projects)
+        cls._cached_projects = sorted(projects)
+        cls._cache_time = now
+        return cls._cached_projects
 
     @classmethod
     def resolve_project_path(cls, query: str) -> Optional[Path]:

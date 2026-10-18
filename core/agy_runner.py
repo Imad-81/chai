@@ -98,9 +98,44 @@ class AntigravityRunner:
                 "start_time": start_time
             }
 
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
-            out_str = stdout.decode("utf-8", errors="replace").strip()
-            err_str = stderr.decode("utf-8", errors="replace").strip()
+            # Read stdout asynchronously line by line for live status updates
+            stdout_chunks = []
+            last_status_time = time.time()
+
+            async def read_stream():
+                nonlocal last_status_time
+                while True:
+                    line = await process.stdout.readline()
+                    if not line:
+                        break
+                    decoded = line.decode("utf-8", errors="replace")
+                    stdout_chunks.append(decoded)
+
+                    # Throttled progress ping to user every 2.5s for meaningful activity
+                    now = time.time()
+                    clean = decoded.strip()
+                    if status_callback and clean and (now - last_status_time > 2.5):
+                        # Filter out raw escape sequences or noisy lines
+                        if len(clean) > 4 and not clean.startswith(("{", "}", "[", "]")):
+                            status_callback(f"⚙️ `{clean[:70]}`")
+                            last_status_time = now
+
+            # Concurrently read stderr and wait for exit
+            stderr_chunks = []
+            async def read_stderr():
+                while True:
+                    line = await process.stderr.readline()
+                    if not line:
+                        break
+                    stderr_chunks.append(line.decode("utf-8", errors="replace"))
+
+            await asyncio.wait_for(
+                asyncio.gather(read_stream(), read_stderr(), process.wait()),
+                timeout=timeout
+            )
+
+            out_str = "".join(stdout_chunks).strip()
+            err_str = "".join(stderr_chunks).strip()
 
             duration = round(time.time() - start_time, 2)
             cls._last_execution = {
@@ -122,13 +157,13 @@ class AntigravityRunner:
             if not out_str:
                 return "✅ Antigravity completed the task successfully (no text output)."
 
-            # Truncate if ridiculously long for a single WhatsApp message (> 3500 chars)
+            # Truncate if ridiculously long (> 3500 chars)
             if len(out_str) > 3500:
                 truncated = out_str[:3400]
                 num_backticks = truncated.count("```")
                 if num_backticks % 2 != 0:
                     truncated += "\n```"
-                out_str = truncated + "\n\n... [output truncated for WhatsApp]"
+                out_str = truncated + "\n\n... [output truncated for Telegram]"
 
             return out_str
 

@@ -205,8 +205,8 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
         voice_file = await context.bot.get_file(voice.file_id)
         await voice_file.download_to_drive(custom_path=str(temp_path))
 
-        # Transcribe with Faster-Whisper
-        text_content = VoiceTranscriber.transcribe(str(temp_path))
+        # Transcribe with Faster-Whisper asynchronously in worker thread
+        text_content = await asyncio.to_thread(VoiceTranscriber.transcribe, str(temp_path))
         if not text_content:
             await status_msg.edit_text("⚠️ Could not hear any speech in that voice note.")
             return

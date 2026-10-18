@@ -127,6 +127,9 @@ async def main():
     init_db()
     logger.info("Database initialized (data/assistant.db)")
 
+    # Pre-warm Whisper speech-to-text model in background for instant voice notes
+    asyncio.create_task(asyncio.to_thread(VoiceTranscriber.get_model))
+
     # 2. Setup Diagnostics HTTP Server
     app = web.Application()
     app.router.add_get("/health", handle_health)

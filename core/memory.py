@@ -4,6 +4,8 @@ from core.db import get_session, MessageRecord, WorkspaceState, AssignmentRecord
 from config import DEFAULT_WORKSPACE
 
 class MemoryManager:
+    _cached_workspace: Optional[str] = None
+
     @staticmethod
     def save_message(sender_jid: str, role: str, content: str, content_type: str = "text", audio_path: Optional[str] = None):
         with get_session() as session:
@@ -30,17 +32,22 @@ class MemoryManager:
                 for r in reversed(records)
             ]
 
-    @staticmethod
-    def get_active_workspace() -> str:
+    @classmethod
+    def get_active_workspace(cls) -> str:
+        if cls._cached_workspace:
+            return cls._cached_workspace
         with get_session() as session:
             stmt = select(WorkspaceState).where(WorkspaceState.key == "active_workspace")
             state = session.exec(stmt).first()
             if state:
+                cls._cached_workspace = state.value
                 return state.value
+            cls._cached_workspace = DEFAULT_WORKSPACE
             return DEFAULT_WORKSPACE
 
-    @staticmethod
-    def set_active_workspace(path: str):
+    @classmethod
+    def set_active_workspace(cls, path: str):
+        cls._cached_workspace = path
         with get_session() as session:
             stmt = select(WorkspaceState).where(WorkspaceState.key == "active_workspace")
             state = session.exec(stmt).first()
