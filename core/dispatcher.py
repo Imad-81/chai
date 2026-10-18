@@ -35,6 +35,7 @@ Respond ONLY with a valid JSON object matching one of the schemas above. No prea
 
 from core.triage import FastTriage
 from core.context_engine import ContextEngine
+from core.memory_agent import MemoryAgent
 
 class Dispatcher:
     @classmethod
@@ -64,7 +65,7 @@ class Dispatcher:
                 res_dict = {"type": "text", "text": fast_match.get("reply", "")}
                 return cls._format_result(res_dict, action, pipeline_start)
             elif action == "ANTIGRAVITY":
-                return await cls._execute_antigravity(fast_match.get("task", user_text), status_updater, pipeline_start)
+                return await cls._execute_antigravity(fast_match.get("task", user_text), sender_jid, status_updater, pipeline_start)
             elif action == "ASSIGNMENT_CREATE":
                 return await cls._execute_assignment_create(
                     fast_match.get("title", "Academic Assignment"),
@@ -86,27 +87,28 @@ class Dispatcher:
         print(f"[Dispatcher] Tier-1 Triage classified '{user_text[:40]}' -> {intent_cat}")
 
         if intent_cat == "ANTIGRAVITY":
-            return await cls._execute_antigravity(user_text, status_updater, pipeline_start)
+            return await cls._execute_antigravity(user_text, sender_jid, status_updater, pipeline_start)
         elif intent_cat == "ASSIGNMENT_CREATE":
             return await cls._execute_assignment_create("Academic Assignment", user_text, user_text, status_updater, pipeline_start)
         elif intent_cat == "SWITCH_WORKSPACE":
             return cls._format_result({"type": "text", "text": WorkspaceManager.get_current_workspace_info()}, "WORKSPACE", pipeline_start)
 
         # 3. Default: Grounded Single-Pass Conversational Chat
-        return await cls._execute_single_pass_chat(user_text, pipeline_start)
+        return await cls._execute_single_pass_chat(user_text, sender_jid, pipeline_start)
 
     @classmethod
     async def _execute_antigravity(
         cls, 
         task_prompt: str, 
+        sender_jid: str,
         status_updater: Optional[Any], 
         pipeline_start: float
     ) -> Dict[str, Any]:
         active_path = MemoryManager.get_active_workspace()
         
-        # Synthesize with recent history to resolve pronouns ('it', 'my repo', 'that')
-        recent_history = MemoryManager.get_recent_history(limit=4)
-        synthesized_prompt = ContextEngine.synthesize_multi_turn_task(task_prompt, recent_history)
+        # Resolve ambiguous pronouns and follow-ups with dedicated MemoryAgent
+        resolved_ctx = await MemoryAgent.resolve_context(task_prompt, sender_jid, active_path)
+        synthesized_prompt = resolved_ctx.resolved_prompt
 
         can_gui, _ = AntigravityRunner.can_spawn_terminal()
         mode_note = " (🖥️ terminal opened on your screen)" if can_gui else ""
@@ -251,11 +253,12 @@ Output the complete revised markdown text."""
     async def _execute_single_pass_chat(
         cls, 
         user_text: str, 
+        sender_jid: str,
         pipeline_start: float
     ) -> Dict[str, Any]:
-        """Grounded single-pass chat completion with developer persona and project context."""
-        history = MemoryManager.get_recent_history(limit=4)
-        grounded_system_prompt = ContextEngine.build_system_prompt()
+        """Grounded single-pass chat completion with developer persona, active session history, and project context."""
+        history = MemoryManager.get_active_session_history(sender_jid, limit=6, exclude_last_if_current=True)
+        grounded_system_prompt = ContextEngine.build_system_prompt(sender_jid)
         chat_messages = [
             {"role": "system", "content": grounded_system_prompt}
         ]

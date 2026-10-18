@@ -55,10 +55,10 @@ class ContextEngine:
         }
 
     @classmethod
-    def build_system_prompt(cls) -> str:
+    def build_system_prompt(cls, sender_jid: Optional[str] = None) -> str:
         """
         Dynamically constructs the system prompt with rich developer identity,
-        active workspace state, and local project index.
+        active workspace state, local project index, durable facts, and recent session summaries.
         """
         ws = cls.get_active_workspace_summary()
 
@@ -71,6 +71,20 @@ class ContextEngine:
                     projects_brief.append(f"{d.name} ({stack})")
         projects_str = ", ".join(projects_brief[:10])
 
+        # Retrieve relevant durable facts for active workspace
+        facts = MemoryManager.get_relevant_facts(workspace=ws["path"], limit=5)
+        facts_section = ""
+        if facts:
+            facts_list = "\n".join(f"  • {f}" for f in facts)
+            facts_section = f"\nRemembered Facts & Preferences:\n{facts_list}\n"
+
+        # Retrieve recent session summaries (episodic memory)
+        summaries = MemoryManager.get_recent_session_summaries(workspace=ws["path"], limit=2)
+        summaries_section = ""
+        if summaries:
+            sum_list = "\n".join(f"  • {s['title']}: {s['summary']}" for s in summaries)
+            summaries_section = f"\nRecent Context & Decisions:\n{sum_list}\n"
+
         prompt = (
             f"You are Chai, the personal AI assistant for {cls.DEVELOPER_NAME} (GitHub: {cls.GITHUB_USERNAME}).\n"
             f"You run locally on {cls.DEVELOPER_NAME}'s Linux computer.\n\n"
@@ -79,7 +93,9 @@ class ContextEngine:
             f"• Active Project: {ws['name']} ({ws['path']})\n"
             f"• Branch: {ws['branch']} {'(dirty)' if ws['dirty'] else '(clean)'}\n"
             f"• Latest Commit: {ws['last_commit']}\n"
-            f"• Available Projects: {projects_str}\n\n"
+            f"• Available Projects: {projects_str}\n"
+            f"{facts_section}"
+            f"{summaries_section}\n"
             f"Instructions:\n"
             f"• Always recognize that references to 'my repo', 'my projects', or repo names refer to {cls.DEVELOPER_NAME}'s local repositories.\n"
             f"• Answer concisely, directly, and technically in Telegram markdown format.\n"

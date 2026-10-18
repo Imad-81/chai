@@ -15,7 +15,7 @@ from config import (
     BASE_DIR,
     TELEGRAM_BOT_TOKEN
 )
-from core.db import get_session, MessageRecord, AssignmentRecord
+from core.db import get_session, MessageRecord, AssignmentRecord, SessionRecord, LongTermFact
 from core.memory import MemoryManager
 from core.agy_runner import AntigravityRunner
 from core.logger import get_logger, tail_logs
@@ -70,6 +70,8 @@ class DebugRouter:
             subcmd = "ping"
         elif cmd in ["/status", "/sysinfo"]:
             subcmd = "status"
+        elif cmd in ["/help", "help", "/commands", "commands", "?"]:
+            subcmd = "help"
 
         logger.info(f"Handling debug subcmd='{subcmd}', arg='{arg}'")
 
@@ -86,7 +88,7 @@ class DebugRouter:
                     count = 20
             return cls._handle_logs(count)
         elif subcmd == "memory":
-            return cls._handle_memory()
+            return cls._handle_memory(sender_jid)
         elif subcmd == "agy":
             return cls._handle_agy(arg)
         elif subcmd == "mode":
@@ -209,31 +211,44 @@ class DebugRouter:
         }
 
     @classmethod
-    def _handle_memory(cls) -> Dict[str, Any]:
+    def _handle_memory(cls, sender_jid: str = "") -> Dict[str, Any]:
         with get_session() as session:
             msg_count = session.exec(select(func.count(MessageRecord.id))).one()
-            recent_turns = MemoryManager.get_recent_history(limit=5)
+            session_count = session.exec(select(func.count(SessionRecord.id))).one()
+            facts_count = session.exec(select(func.count(LongTermFact.id))).one()
             latest_assignment = MemoryManager.get_latest_assignment()
 
-        history_lines = []
-        for turn in recent_turns:
-            icon = "👤" if turn["role"] == "user" else "🤖"
-            snippet = turn["content"][:60].replace("\n", " ")
-            history_lines.append(f"{icon} {snippet}")
+        active_sess = MemoryManager.get_active_session(sender_jid) if sender_jid else None
+        active_sess_str = "None"
+        turns_str = "_No turns in active session_"
+        if active_sess:
+            active_sess_str = f"`{active_sess.session_id}` ({active_sess.turn_count} turns, ws: `{Path(active_sess.workspace).name}`)"
+            active_turns = MemoryManager.get_active_session_history(sender_jid, limit=5)
+            if active_turns:
+                turns_lines = [
+                    f"{'👤' if t['role'] == 'user' else '🤖'} {t['content'][:55].replace(chr(10), ' ')}"
+                    for t in active_turns
+                ]
+                turns_str = "\n".join(turns_lines)
 
-        history_str = "\n".join(history_lines) if history_lines else "_No recent messages_"
+        summaries = MemoryManager.get_recent_session_summaries(limit=2)
+        sum_str = "\n".join(f"• *{s['title']}*: {s['summary']}" for s in summaries) if summaries else "_No summaries yet_"
 
-        latest_doc_str = "None"
-        if latest_assignment:
-            latest_doc_str = f"*{latest_assignment.title}* (v{latest_assignment.version})"
+        facts = MemoryManager.get_all_facts(limit=3)
+        facts_str = "\n".join(f"• [{f.id}] {f.fact}" for f in facts) if facts else "_No durable facts_"
+
+        latest_doc_str = f"*{latest_assignment.title}* (v{latest_assignment.version})" if latest_assignment else "None"
 
         return {
             "type": "text",
             "text": (
                 f"🧠 *Memory & Context State*\n\n"
-                f"• *Total Messages in DB:* {msg_count}\n"
+                f"• *Total Messages:* {msg_count} | *Sessions:* {session_count} | *Facts:* {facts_count}\n"
+                f"• *Active Session:* {active_sess_str}\n"
                 f"• *Latest Assignment:* {latest_doc_str}\n\n"
-                f"*Recent Turns (Last 5):*\n{history_str}"
+                f"💬 *Active Working Memory (Last 5 Turns):*\n{turns_str}\n\n"
+                f"📜 *Recent Episodic Summaries:*\n{sum_str}\n\n"
+                f"📌 *Durable Facts:*\n{facts_str}"
             )
         }
 
@@ -326,15 +341,34 @@ class DebugRouter:
         return {
             "type": "text",
             "text": (
-                "🛠️ *Chai Debug Commands*\n\n"
-                "• `/debug status` or `/sysinfo` — System health, CPU/RAM/Disk, services\n"
-                "• `/debug ping` — Round-trip latency test (Ollama & Orchestrator)\n"
-                "• `/debug logs [N]` — View last N log lines (default 20)\n"
-                "• `/debug memory` — View database & conversation turn state\n"
-                "• `/debug agy` — View Antigravity runner status & last task\n"
-                "• `/debug agy kill` — Kill active runaway Antigravity process\n"
-                "• `/debug session` — View or reset Signal session files (`/debug session reset`)\n"
-                "• `/debug mode [on|off]` — Toggle response latency footers\n"
-                "• `/debug help` — Show this command reference"
+                "🤖 *Chai Assistant — Command Reference*\n"
+                "━━━━━━━━━━━━━━━━━━━━\n\n"
+                "📁 *Workspaces & Code Projects*\n"
+                "• `/projects` or `/ls` — List available local code repositories\n"
+                "• `/cd <project>` — Switch active workspace repository\n\n"
+                "🧠 *Contextual Memory & Sessions*\n"
+                "• `/new` or `/reset` — Start fresh session (clears working memory)\n"
+                "• `/session` — View active session info, turns & idle timer\n"
+                "• `/memory` — View working turns, past summaries & stored facts\n"
+                "• `/remember <fact>` — Save a durable technical fact or preference\n"
+                "• `/forget <id|word>` — Remove a stored fact\n\n"
+                "💻 *Coding & Terminal (Antigravity)*\n"
+                "• Natural language triggers Antigravity on your machine:\n"
+                "  _e.g., \"fix bug in bridge.js\", \"run pytest\", \"git status\"_\n"
+                "• `/debug agy` — View Antigravity runner status & active task\n"
+                "• `/debug agy kill` — Terminate running Antigravity task\n\n"
+                "📄 *Academic Assignments & Research*\n"
+                "• Natural language generates styled PDFs:\n"
+                "  _e.g., \"write an essay on Distributed Systems\"_\n"
+                "• Natural language revisions:\n"
+                "  _e.g., \"revise the assignment to add a comparison table\"_\n\n"
+                "🛠️ *System & Diagnostics*\n"
+                "• `/status` or `/sysinfo` — View CPU, RAM, Disk, and service health\n"
+                "• `/ping` — Measure round-trip bot & Ollama latency\n"
+                "• `/debug logs [N]` — View recent log lines (default 20)\n"
+                "• `/debug memory` — Deep database & session inspection\n"
+                "• `/debug mode [on|off]` — Toggle response execution timing\n"
+                "• `/help` — Display this command reference\n"
+                "━━━━━━━━━━━━━━━━━━━━"
             )
         }
