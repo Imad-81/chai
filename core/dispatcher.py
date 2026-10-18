@@ -2,6 +2,7 @@ import json
 import re
 import time
 import asyncio
+from pathlib import Path
 from typing import Dict, Any, Optional
 import ollama
 from config import DISPATCHER_MODEL
@@ -11,6 +12,7 @@ from core.agy_runner import AntigravityRunner
 from core.pdf_compiler import PDFCompiler
 from core.logger import get_logger
 from core.debug_router import DebugRouter, is_debug_verbose
+from core.file_detector import FileDetector
 
 logger = get_logger("dispatcher")
 
@@ -81,6 +83,13 @@ class Dispatcher:
                     status_updater,
                     pipeline_start
                 )
+            elif action == "DOCUMENT_FETCH":
+                return await cls._execute_document_fetch(
+                    fast_match.get("target"),
+                    fast_match.get("query", user_text),
+                    sender_jid,
+                    pipeline_start
+                )
 
         # 2. Tier 1: Micro-Classifier for Ambiguous Requests
         intent_cat = await FastTriage.classify_ambiguous(user_text)
@@ -147,6 +156,10 @@ class Dispatcher:
         if status_updater:
             status_updater(f"🤖 Antigravity CLI dispatched in `{active_path}`{cont_note}{mode_note}...")
 
+        # Snapshot documents before Antigravity executes
+        before_docs = FileDetector.snapshot_documents(active_path)
+        agy_start_time = time.time()
+
         output = await AntigravityRunner.run_prompt(
             prompt=synthesized_prompt,
             workspace_dir=active_path,
@@ -158,7 +171,54 @@ class Dispatcher:
         # Mark that Antigravity has executed for this session in this workspace
         MemoryManager.mark_session_agy_used(sender_jid, active_path)
 
-        return cls._format_result({"type": "text", "text": output}, "ANTIGRAVITY", pipeline_start)
+        # Identify newly created, modified, or requested documents (.pdf, .docx)
+        detected_docs = FileDetector.identify_documents(
+            workspace_dir=active_path,
+            before_snapshot=before_docs,
+            start_time=agy_start_time,
+            prompt=task_prompt,
+            output_text=output
+        )
+
+        res_payload: Dict[str, Any] = {"type": "text", "text": output}
+        if detected_docs:
+            doc_names = ", ".join(f"`{d.name}`" for d in detected_docs)
+            logger.info(f"Antigravity generated documents detected: {doc_names}")
+            if status_updater:
+                status_updater(f"📄 Identified document: {detected_docs[0].name}, sending to Telegram...")
+            res_payload["files"] = [
+                {
+                    "filePath": str(d),
+                    "fileName": d.name,
+                    "caption": f"📄 Delivered: `{d.name}`"
+                }
+                for d in detected_docs
+            ]
+
+        return cls._format_result(res_payload, "ANTIGRAVITY", pipeline_start)
+
+    @classmethod
+    async def _execute_document_fetch(
+        cls, 
+        target: Optional[str], 
+        query: str, 
+        sender_jid: str, 
+        pipeline_start: float
+    ) -> Dict[str, Any]:
+        active_path = MemoryManager.get_active_workspace()
+        doc = FileDetector.find_requested_document(active_path, target or query)
+        if doc and doc.exists():
+            return cls._format_result({
+                "type": "file",
+                "filePath": str(doc),
+                "fileName": doc.name,
+                "caption": f"📄 Here is `{doc.name}` from `{Path(active_path).name}`."
+            }, "DOCUMENT_FETCH", pipeline_start)
+        else:
+            return cls._format_result({
+                "type": "text",
+                "text": f"⚠️ Could not find a matching `.pdf` or `.docx` file in `{active_path}`. Would you like me to generate one?"
+            }, "DOCUMENT_FETCH", pipeline_start)
 
     @classmethod
     async def _execute_assignment_create(

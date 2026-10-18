@@ -31,6 +31,9 @@ Chai allows you to manage software repositories, run agentic coding tasks via An
   - Uses an intelligent single-message tracker (`InPlaceStatusTracker`) on Telegram that edits a single status message in-place and cleans it up upon completion, eliminating notification sound spam and chat bubble clutter.
 - 🎙️ **Local Voice Transcription**:
   - Offline audio transcription for Telegram voice notes using `faster-whisper` (`base.en` or custom size) running on CPU or CUDA.
+- 📄 **Automatic Document Detection & Telegram Delivery (`FileDetector`)**:
+  - Whenever Antigravity creates or modifies `.pdf` or `.docx` files during an execution (e.g. exporting reports, compiling documentation, converting markdown), Chai automatically detects the new or modified files, captures referenced paths from Antigravity's response, and uploads the actual files directly to Telegram.
+  - Supports instant document retrieval (e.g. *"send me the pdf"*, *"return me the docx"*, *"send report.pdf"*) in < 0.1ms via Tier-0 fast-path without invoking LLM models.
 - 📄 **Styled PDF Document Compiler**:
   - Compiles academic essays, technical reports, and assignment summaries into formatted PDFs using ReportLab (custom palettes, running headers, pagination, styled code/tables) and uploads them directly to Telegram.
 - 🛠️ **In-Chat Diagnostics & Observability**:

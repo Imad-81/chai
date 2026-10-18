@@ -2,7 +2,7 @@ import os
 import sys
 import asyncio
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Dict, Any, List
 
 from telegram import Update, constants, BotCommand
 from telegram.ext import (
@@ -51,6 +51,61 @@ async def send_safe_message(chat, text: str):
         except Exception:
             # Fallback to plain text if Markdown parsing fails (e.g. unclosed backticks)
             await chat.send_message(chunk)
+
+async def _send_result_payload(chat, result: Dict[str, Any], sender_id: str):
+    """Delivers the dispatcher result (text and/or documents) to the Telegram chat."""
+    files_to_send: List[Dict[str, Any]] = []
+    if result.get("files"):
+        for item in result["files"]:
+            if isinstance(item, dict):
+                files_to_send.append(item)
+            elif isinstance(item, (str, Path)):
+                files_to_send.append({
+                    "filePath": str(item),
+                    "fileName": Path(item).name,
+                    "caption": f"📄 Delivered: `{Path(item).name}`"
+                })
+    elif result.get("filePath"):
+        files_to_send.append({
+            "filePath": result.get("filePath"),
+            "fileName": result.get("fileName") or Path(result.get("filePath")).name,
+            "caption": result.get("caption", "")
+        })
+
+    reply_text = result.get("text", "")
+
+    # 1. Send text message if text content exists
+    if reply_text:
+        MemoryManager.save_message(
+            sender_jid=sender_id,
+            role="assistant",
+            content=reply_text,
+            content_type="text"
+        )
+        await send_safe_message(chat, reply_text)
+
+    # 2. Upload and deliver all attached files
+    for doc in files_to_send:
+        f_path = doc.get("filePath")
+        f_name = doc.get("fileName") or (Path(f_path).name if f_path else "document")
+        f_caption = doc.get("caption") or f"📄 Delivered: `{f_name}`"
+        if f_path and Path(f_path).exists():
+            await chat.send_action(action=constants.ChatAction.UPLOAD_DOCUMENT)
+            with open(f_path, "rb") as f:
+                await chat.send_document(
+                    document=f,
+                    filename=f_name,
+                    caption=f_caption,
+                    parse_mode=constants.ParseMode.MARKDOWN
+                )
+            MemoryManager.save_message(
+                sender_jid=sender_id,
+                role="assistant",
+                content=f"[Sent Document: {f_name}] {f_caption}",
+                content_type="document"
+            )
+        else:
+            await send_safe_message(chat, f"⚠️ Document compiled but file was not found at `{f_path}`")
 
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -336,38 +391,7 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
         # Clear intermediate status message before sending final reply
         await tracker.clear()
 
-        res_type = result.get("type", "text")
-        if res_type == "text":
-            reply_text = result.get("text", "")
-            MemoryManager.save_message(
-                sender_jid=sender_id,
-                role="assistant",
-                content=reply_text,
-                content_type="text"
-            )
-            await send_safe_message(chat, reply_text)
-
-        elif res_type == "file":
-            file_path = result.get("filePath")
-            file_name = result.get("fileName")
-            caption = result.get("caption", "")
-            MemoryManager.save_message(
-                sender_jid=sender_id,
-                role="assistant",
-                content=f"[Sent PDF: {file_name}] {caption}",
-                content_type="pdf"
-            )
-            if file_path and Path(file_path).exists():
-                await chat.send_action(action=constants.ChatAction.UPLOAD_DOCUMENT)
-                with open(file_path, "rb") as f:
-                    await chat.send_document(
-                        document=f,
-                        filename=file_name,
-                        caption=caption,
-                        parse_mode=constants.ParseMode.MARKDOWN
-                    )
-            else:
-                await send_safe_message(chat, f"⚠️ Document compiled but file was not found at `{file_path}`")
+        await _send_result_payload(chat, result, sender_id)
 
     except Exception as e:
         logger.error(f"Error processing Telegram request: {e}", exc_info=True)
@@ -423,29 +447,7 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
 
         await tracker.clear()
 
-        res_type = result.get("type", "text")
-        if res_type == "text":
-            reply_text = result.get("text", "")
-            MemoryManager.save_message(
-                sender_jid=sender_id,
-                role="assistant",
-                content=reply_text,
-                content_type="text"
-            )
-            await send_safe_message(chat, reply_text)
-        elif res_type == "file":
-            file_path = result.get("filePath")
-            file_name = result.get("fileName")
-            caption = result.get("caption", "")
-            if file_path and Path(file_path).exists():
-                await chat.send_action(action=constants.ChatAction.UPLOAD_DOCUMENT)
-                with open(file_path, "rb") as f:
-                    await chat.send_document(
-                        document=f,
-                        filename=file_name,
-                        caption=caption,
-                        parse_mode=constants.ParseMode.MARKDOWN
-                    )
+        await _send_result_payload(chat, result, sender_id)
 
     except Exception as e:
         logger.error(f"Failed to process voice note: {e}", exc_info=True)

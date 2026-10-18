@@ -67,7 +67,8 @@ RE_CODE_TRIGGERS = re.compile(
     r"compile|build|refactor|inspect|grep|bash|terminal|checkout|commit|push|pull)\b|"
     r"(?:please\s+(?:fix|debug|run|test)|can\s+you\s+(?:fix|debug|run|test|create\s+file|edit))|"
     r"\b(?:git\s+status|git\s+diff|git\s+log|git\s+branch|git\s+commit|git\s+push|git\s+pull)\b|"
-    r"\b(?:run\s+tests|run\s+pytest|run\s+build|unit\s+test|fix\s+bug|fix\s+error)\b",
+    r"\b(?:run\s+tests|run\s+pytest|run\s+build|unit\s+test|fix\s+bug|fix\s+error)\b|"
+    r"\b(?:convert|export|generate|create|make|compile|write|build)\b.*\b(?:pdf|docx|documents?)\b",
     re.IGNORECASE
 )
 
@@ -139,7 +140,14 @@ class FastTriage:
         if RE_WORKSPACE_INFO.match(text):
             return {"action": "DIRECT_REPLY", "reply": WorkspaceManager.get_current_workspace_info()}
 
-        # 4. Direct Code / Developer triggers -> ANTIGRAVITY
+        # 4. Document Retrieval (send/give/return me the pdf/docx) (< 0.1ms)
+        from core.file_detector import RE_DOCUMENT_FETCH
+        doc_fetch_match = RE_DOCUMENT_FETCH.search(text)
+        if doc_fetch_match and not re.search(r"\b(?:create|generate|write|make|compile|convert|edit|update|build)\b", text, re.IGNORECASE):
+            target = doc_fetch_match.group(1) or text
+            return {"action": "DOCUMENT_FETCH", "target": target, "query": text}
+
+        # 5. Direct Code / Developer triggers -> ANTIGRAVITY
         if RE_CODE_TRIGGERS.search(text):
             return {"action": "ANTIGRAVITY", "task": text}
 
@@ -162,7 +170,8 @@ class FastTriage:
 
     RE_DEV_AMBIGUOUS = re.compile(
         r"\b(?:check|deploy|install|setup|configure|restart|status|process|port|scripts?|files?|repos?|server|docker|"
-        r"commit|push|pull|branch|uncommitted|changes|stash|merge|tests?|build|compile|update|edit|code|fix)\b",
+        r"commit|push|pull|branch|uncommitted|changes|stash|merge|tests?|build|compile|update|edit|code|fix|"
+        r"pdf|docx|documents?)\b",
         re.IGNORECASE
     )
 
