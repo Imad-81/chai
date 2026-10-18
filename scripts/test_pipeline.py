@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
 """
 Chai Offline Diagnostic & Component Test Suite
-Verifies all 6 subsystems without requiring a physical WhatsApp interaction:
+Verifies all 7 subsystems without requiring live Telegram interactions:
 1. SQLite Database & State Management
 2. Local Ollama LLM Connectivity & Model Verification
 3. Whisper Speech-to-Text Engine
 4. PDF Compilation Pipeline
 5. Antigravity CLI Verification
-6. WhatsApp Baileys Bridge
+6. Telegram Bot Interface
 7. DebugRouter In-Chat Command Suite
 """
 
@@ -180,7 +180,7 @@ async def test_debug_router() -> bool:
     all_ok = True
     for cmd in commands:
         try:
-            res = await DebugRouter.handle_debug_command(cmd, "test@s.whatsapp.net")
+            res = await DebugRouter.handle_debug_command(cmd, "123456789")
             if res and "text" in res and res["text"]:
                 title = cmd.replace("/debug ", "").upper()
                 print(f"   {PASS} Command `{cmd}` responded ({len(res['text'])} chars)")
