@@ -1,5 +1,6 @@
 import json
 import re
+import time
 import asyncio
 from typing import Dict, Any, Optional
 import ollama
@@ -8,9 +9,13 @@ from core.memory import MemoryManager
 from core.workspace_manager import WorkspaceManager
 from core.agy_runner import AntigravityRunner
 from core.pdf_compiler import PDFCompiler
+from core.logger import get_logger
+from core.debug_router import DebugRouter, is_debug_verbose
+
+logger = get_logger("dispatcher")
 
 SYSTEM_ROUTER_PROMPT = """You are an intelligent triage agent for a personal Linux assistant.
-The user is messaging you from WhatsApp.
+The user is messaging you from Telegram.
 Available projects on this computer: {projects_list}
 Active workspace: {active_workspace}
 
@@ -42,6 +47,12 @@ class Dispatcher:
         - {"type": "text", "text": "..."}
         - {"type": "file", "filePath": "...", "fileName": "...", "caption": "..."}
         """
+        pipeline_start = time.perf_counter()
+
+        # 0. Intercept Debug Commands immediately (zero LLM latency)
+        if DebugRouter.is_debug_command(user_text):
+            return await DebugRouter.handle_debug_command(user_text, sender_jid)
+
         projects_list = ", ".join(WorkspaceManager.list_available_projects())
         active_ws = MemoryManager.get_active_workspace()
 
@@ -57,7 +68,7 @@ class Dispatcher:
             success, msg = WorkspaceManager.switch_workspace(target)
             return {"type": "text", "text": msg}
 
-        if text_lower in ["status", "workspace", "pwd"]:
+        if text_lower in ["workspace", "pwd"]:
             return {"type": "text", "text": WorkspaceManager.get_current_workspace_info()}
 
         # Intent classification via local Ollama
@@ -147,12 +158,13 @@ Guidelines:
                 version=1
             )
 
-            return {
+            res_dict = {
                 "type": "file",
                 "filePath": pdf_path,
                 "fileName": f"{title.replace(' ', '_')}.pdf",
                 "caption": f"✅ Completed assignment: *{title}*\nAttached PDF compiled and delivered."
             }
+            return cls._format_result(res_dict, action, pipeline_start)
 
         # 3. REVISE ASSIGNMENT & COMPILE UPDATED PDF
         elif action == "ASSIGNMENT_REVISE":
@@ -201,12 +213,13 @@ Output the complete revised markdown text."""
                 version=new_version
             )
 
-            return {
+            res_dict = {
                 "type": "file",
                 "filePath": new_pdf_path,
                 "fileName": f"{latest.title.replace(' ', '_')}_v{new_version}.pdf",
                 "caption": f"✅ Updated *{latest.title}* to version {new_version}.\nChanges applied."
             }
+            return cls._format_result(res_dict, action, pipeline_start)
 
         # 4. ANTIGRAVITY TASK (Code editing, debugging, terminal, browser)
         elif action == "ANTIGRAVITY":
@@ -221,7 +234,7 @@ Output the complete revised markdown text."""
                 workspace_dir=active_path,
                 timeout=300
             )
-            return {"type": "text", "text": output}
+            return cls._format_result({"type": "text", "text": output}, action, pipeline_start)
 
         # 5. CHAT (Direct conversational answer)
         else:
@@ -229,7 +242,7 @@ Output the complete revised markdown text."""
             if not reply:
                 # Fallback to direct chat with recent history
                 history = MemoryManager.get_recent_history(limit=4)
-                chat_messages = [{"role": "system", "content": "You are a helpful personal assistant on WhatsApp. Answer concisely."}]
+                chat_messages = [{"role": "system", "content": "You are a helpful personal assistant on Telegram. Answer concisely."}]
                 chat_messages.extend(history)
                 chat_messages.append({"role": "user", "content": user_text})
                 chat_res = await asyncio.to_thread(
@@ -239,4 +252,17 @@ Output the complete revised markdown text."""
                 )
                 reply = chat_res['message']['content'].strip()
 
-            return {"type": "text", "text": reply}
+            return cls._format_result({"type": "text", "text": reply}, action, pipeline_start)
+
+    @classmethod
+    def _format_result(cls, result: Dict[str, Any], action: str, start_time: float) -> Dict[str, Any]:
+        """Appends latency and debug metadata if debug verbose mode is on."""
+        if not is_debug_verbose():
+            return result
+        duration = time.perf_counter() - start_time
+        footer = f"\n\n_⏱️ {duration:.2f}s | Action: {action} | Model: {DISPATCHER_MODEL}_"
+        if result.get("type") == "text":
+            result["text"] = result.get("text", "") + footer
+        elif result.get("type") == "file":
+            result["caption"] = result.get("caption", "") + footer
+        return result

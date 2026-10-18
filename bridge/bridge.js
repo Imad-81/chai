@@ -30,6 +30,56 @@ if (!fs.existsSync(AUDIO_DIR)) fs.mkdirSync(AUDIO_DIR, { recursive: true });
 const PYTHON_WEBHOOK_URL = process.env.PYTHON_WEBHOOK_URL || 'http://127.0.0.1:5055/webhook';
 const BRIDGE_PORT = parseInt(process.env.BRIDGE_PORT || '5056', 10);
 
+// Track active SignalKeyStore for flushing cache on corrupted sessions
+let activeSignalKeyStore = null;
+const recentPurgedSessions = new Map();
+
+function purgeCorruptedSession(sessionId) {
+    if (!sessionId) return;
+    const now = Date.now();
+    const lastPurge = recentPurgedSessions.get(sessionId) || 0;
+    // Debounce purges for the same session to once per 5 seconds
+    if (now - lastPurge < 5000) return;
+    recentPurgedSessions.set(sessionId, now);
+
+    try {
+        const sessionFile = path.join(AUTH_DIR, `session-${sessionId}.json`);
+        let unlinked = false;
+        if (fs.existsSync(sessionFile)) {
+            const sizeKb = (fs.statSync(sessionFile).size / 1024).toFixed(1);
+            fs.unlinkSync(sessionFile);
+            unlinked = true;
+            console.warn(`[Bridge] ⚠️ Bad MAC detected: Auto-purged corrupted session-${sessionId}.json (${sizeKb} KB). Requesting fresh Signal session.`);
+        }
+        // Also check if there's a wild base session e.g. 182948577984634.0 -> purge 182948577984634.0
+        if (activeSignalKeyStore?.clear) {
+            activeSignalKeyStore.clear();
+        }
+    } catch (err) {
+        console.warn(`[Bridge] Error purging corrupted session ${sessionId}:`, err.message);
+    }
+}
+
+function sanitizeAuthSessions() {
+    if (!fs.existsSync(AUTH_DIR)) return;
+    try {
+        const files = fs.readdirSync(AUTH_DIR);
+        for (const file of files) {
+            if (file.startsWith('session-') && file.endsWith('.json')) {
+                const fullPath = path.join(AUTH_DIR, file);
+                try {
+                    const st = fs.statSync(fullPath);
+                    // Bloated session files (> 15KB) are severely corrupted multi-ratchet chains
+                    if (st.size > 15 * 1024) {
+                        fs.unlinkSync(fullPath);
+                        console.warn(`[Bridge] Auto-cleaned bloated/corrupted session file: ${file} (${(st.size / 1024).toFixed(1)} KB)`);
+                    }
+                } catch (e) {}
+            }
+        }
+    } catch (err) {}
+}
+
 // Suppress verbose libsignal internal crypto session logs that clutter the terminal
 const originalConsoleInfo = console.info;
 console.info = function (...args) {
@@ -53,6 +103,32 @@ console.warn = function (...args) {
         return;
     }
     originalConsoleWarn.apply(console, args);
+};
+
+const originalConsoleError = console.error;
+console.error = function (...args) {
+    const firstArg = args[0];
+    const secondArg = args[1];
+    const msg = typeof firstArg === 'string' ? firstArg : (firstArg?.message || '');
+    const stack = typeof secondArg === 'string' ? secondArg : (firstArg?.stack || '');
+
+    // Intercept and auto-heal Bad MAC errors from libsignal
+    if (msg.includes('Bad MAC') || stack.includes('Bad MAC')) {
+        // Extract session ID from stack, e.g. "at async 182948577984634.0 [as awaitable]"
+        const match = stack.match(/at async ([\w\.-]+) \[as awaitable\]/);
+        if (match && match[1]) {
+            purgeCorruptedSession(match[1]);
+        } else {
+            sanitizeAuthSessions();
+        }
+        return; // Suppress runaway stack trace dumps to terminal
+    }
+
+    if (msg.includes('Failed to decrypt message with any known session') || msg.includes('No matching sessions found')) {
+        return; // Suppress companion decryption failure logs while session re-ratchets
+    }
+
+    originalConsoleError.apply(console, args);
 };
 
 let sock = null;
@@ -116,27 +192,34 @@ async function notifyPython(payload) {
 }
 
 async function startSock() {
+    // 1. Sanitize any bloated or corrupted session files before connection
+    sanitizeAuthSessions();
+
     const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
     const { version } = await fetchLatestBaileysVersion();
     const pairingNumber = process.env.PAIRING_NUMBER ? process.env.PAIRING_NUMBER.replace(/[^0-9]/g, '') : null;
     const logger = pino({ level: 'warn' });
+
+    activeSignalKeyStore = makeCacheableSignalKeyStore(state.keys, logger);
 
     sock = makeWASocket({
         version,
         logger,
         auth: {
             creds: state.creds,
-            keys: makeCacheableSignalKeyStore(state.keys, logger)
+            keys: activeSignalKeyStore
         },
         // macOS/Safari fingerprint is closer to what WhatsApp expects from a companion
         // device, reducing aggressive session resets that cause iPhone decryption failures.
         browser: Browsers.macOS('Safari'),
         syncFullHistory: false,
         markOnlineOnConnect: true,
-        fireInitQueries: true,
+        fireInitQueries: false,
         printQRInTerminal: false,
         generateHighQualityLinkPreview: false,
         emitOwnEvents: false,
+        retryRequestDelayMs: 350,
+        maxMsgRetryCount: 5,
         getMessage: async (key) => {
             // Must return proto.IMessage (the .message field), not the full WAMessage.
             // WhatsApp server calls this during retry/re-delivery requests.
@@ -349,9 +432,17 @@ async function startSock() {
 const server = http.createServer(async (req, res) => {
     const url = new URL(req.url, `http://${req.headers.host}`);
 
-    if (req.method === 'GET' && url.pathname === '/status') {
+    if (req.method === 'GET' && (url.pathname === '/status' || url.pathname === '/health')) {
         res.writeHead(200, { 'Content-Type': 'application/json' });
-        res.end(JSON.stringify({ status: connectionStatus, myJid }));
+        res.end(JSON.stringify({
+            status: connectionStatus,
+            myJid,
+            uptimeSeconds: Math.floor(process.uptime()),
+            memoryUsage: process.memoryUsage(),
+            botSentCount: botSentMessageIds.size,
+            cacheCount: messageStore.size,
+            timestamp: new Date().toISOString()
+        }));
         return;
     }
 
@@ -359,31 +450,48 @@ const server = http.createServer(async (req, res) => {
         let body = '';
         req.on('data', chunk => body += chunk);
         req.on('end', async () => {
+            const startTime = Date.now();
             try {
                 const { jid, text } = JSON.parse(body);
                 const targetJid = (jid && !jid.endsWith('@lid')) ? jid : myJid;
                 if (!sock || connectionStatus !== 'connected') {
+                    console.warn(`[Bridge] ⚠️ Cannot send text reply: socket is not connected (status=${connectionStatus})`);
                     res.writeHead(503, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'WhatsApp not connected' }));
                     return;
                 }
 
-                // Pre-generate unique message ID starting with BOT_ so upsert can never process it
-                const msgId = 'BOT_' + Date.now() + '_' + crypto.randomBytes(8).toString('hex').toUpperCase();
-                botSentMessageIds.add(msgId);
-                messageStore.set(msgId, { conversation: text });
+                const snippet = text ? text.substring(0, 50).replace(/\n/g, ' ') : '';
+                console.log(`[Bridge] 📤 Sending text reply to ${targetJid}: "${snippet}"`);
 
-                // Send typing indicator
-                await sock.sendPresenceUpdate('composing', targetJid);
-                const sent = await sock.sendMessage(targetJid, { text }, { messageId: msgId });
-                if (sent?.message) {
-                    messageStore.set(msgId, sent.message);
+                // Non-blocking typing indicator (only for external chats, skip for Note-to-Self)
+                if (targetJid !== myJid) {
+                    sock.sendPresenceUpdate('composing', targetJid).catch(() => {});
                 }
-                await sock.sendPresenceUpdate('paused', targetJid);
+
+                // Send with Baileys standard native messageId generation (3EB0...)
+                const sent = await sock.sendMessage(targetJid, { text });
+                const sentId = sent?.key?.id;
+
+                if (sentId) {
+                    botSentMessageIds.add(sentId);
+                    if (sent.message) {
+                        messageStore.set(sentId, sent.message);
+                    }
+                }
+
+                if (targetJid !== myJid) {
+                    sock.sendPresenceUpdate('paused', targetJid).catch(() => {});
+                }
+
+                const elapsedMs = Date.now() - startTime;
+                console.log(`[Bridge] ✅ Text reply delivered to ${targetJid} (ID: ${sentId || 'unknown'}, ${elapsedMs}ms)`);
 
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true, messageId: msgId }));
+                res.end(JSON.stringify({ success: true, messageId: sentId }));
             } catch (err) {
+                const elapsedMs = Date.now() - startTime;
+                console.error(`[Bridge] ❌ Failed to send text reply (${elapsedMs}ms):`, err.message);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));
             }
@@ -395,16 +503,19 @@ const server = http.createServer(async (req, res) => {
         let body = '';
         req.on('data', chunk => body += chunk);
         req.on('end', async () => {
+            const startTime = Date.now();
             try {
                 const { jid, filePath, fileName, caption, mimetype } = JSON.parse(body);
                 const targetJid = (jid && !jid.endsWith('@lid')) ? jid : myJid;
                 if (!sock || connectionStatus !== 'connected') {
+                    console.warn(`[Bridge] ⚠️ Cannot send file: socket is not connected (status=${connectionStatus})`);
                     res.writeHead(503, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'WhatsApp not connected' }));
                     return;
                 }
 
                 if (!fs.existsSync(filePath)) {
+                    console.error(`[Bridge] ❌ File not found on disk: ${filePath}`);
                     res.writeHead(404, { 'Content-Type': 'application/json' });
                     res.end(JSON.stringify({ error: 'File not found' }));
                     return;
@@ -414,23 +525,32 @@ const server = http.createServer(async (req, res) => {
                 const resolvedMime = mimetype || 'application/pdf';
                 const displayName = fileName || path.basename(filePath);
 
-                const msgId = 'BOT_' + Date.now() + '_' + crypto.randomBytes(8).toString('hex').toUpperCase();
-                botSentMessageIds.add(msgId);
+                console.log(`[Bridge] 📤 Sending document to ${targetJid}: "${displayName}" (${(fileBuffer.length / 1024).toFixed(1)} KB)`);
 
+                // Send with native messageId generation
                 const sent = await sock.sendMessage(targetJid, {
                     document: fileBuffer,
                     mimetype: resolvedMime,
                     fileName: displayName,
                     caption: caption || ''
-                }, { messageId: msgId });
+                });
+                const sentId = sent?.key?.id;
 
-                if (sent?.message) {
-                    messageStore.set(msgId, sent.message);
+                if (sentId) {
+                    botSentMessageIds.add(sentId);
+                    if (sent.message) {
+                        messageStore.set(sentId, sent.message);
+                    }
                 }
 
+                const elapsedMs = Date.now() - startTime;
+                console.log(`[Bridge] ✅ Document delivered to ${targetJid} (ID: ${sentId || 'unknown'}, ${elapsedMs}ms)`);
+
                 res.writeHead(200, { 'Content-Type': 'application/json' });
-                res.end(JSON.stringify({ success: true, messageId: msgId }));
+                res.end(JSON.stringify({ success: true, messageId: sentId }));
             } catch (err) {
+                const elapsedMs = Date.now() - startTime;
+                console.error(`[Bridge] ❌ Failed to send document (${elapsedMs}ms):`, err.message);
                 res.writeHead(500, { 'Content-Type': 'application/json' });
                 res.end(JSON.stringify({ error: err.message }));
             }

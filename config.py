@@ -14,6 +14,12 @@ AUDIO_DIR.mkdir(parents=True, exist_ok=True)
 ARTIFACTS_DIR = DATA_DIR / "artifacts"
 ARTIFACTS_DIR.mkdir(parents=True, exist_ok=True)
 
+LOG_DIR = DATA_DIR / "logs"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+LOG_FILE = LOG_DIR / "chai.log"
+
+DEBUG_MODE = os.getenv("DEBUG_MODE", "false").lower() in ("true", "1", "yes")
+
 # Database
 DB_PATH = DATA_DIR / "assistant.db"
 DATABASE_URL = os.getenv("DATABASE_URL", f"sqlite:///{DB_PATH}")
@@ -36,7 +42,15 @@ AGY_BINARY = os.getenv("AGY_BINARY", str(Path.home() / ".local" / "bin" / "agy")
 PROJECTS_ROOT = Path(os.getenv("PROJECTS_ROOT", str(Path.home() / "projects")))
 DEFAULT_WORKSPACE = str(BASE_DIR)
 
-# Security: Allowed phone numbers (optional extra check; bridge enforces self-JID)
+# Telegram Bot Configuration
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+TELEGRAM_ALLOWED_USERS = [
+    int(uid.strip()) 
+    for uid in os.getenv("TELEGRAM_ALLOWED_USERS", "").split(",") 
+    if uid.strip().isdigit()
+]
+
+# Security: Allowed phone numbers (for archived WhatsApp bridge)
 ALLOWED_PHONE_NUMBERS = [
     num.strip() 
     for num in os.getenv("ALLOWED_PHONE_NUMBERS", "").split(",") 

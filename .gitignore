@@ -13,12 +13,14 @@ __pycache__/
 
 # Node.js dependencies & logs
 node_modules/
+archive/**/node_modules/
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 
 # WhatsApp credentials & session keys (CRITICAL - DO NOT COMMIT)
 bridge/auth_info_baileys/
+archive/**/auth_info_baileys/
 *.session
 creds.json
 pre-key-*.json
