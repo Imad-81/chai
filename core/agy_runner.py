@@ -5,12 +5,14 @@ import shlex
 import shutil
 import signal
 import time
+import json
 from pathlib import Path
 from typing import Optional, Callable, Dict, Any, Tuple
 from config import (
     AGY_BINARY, 
     AGY_SPAWN_TERMINAL, 
     AGY_TERMINAL_EMULATOR, 
+    AGY_UI_MODE,
     DATA_DIR, 
     LOG_DIR
 )
@@ -104,40 +106,58 @@ class AntigravityRunner:
     ) -> str:
         """
         Executes a prompt through Antigravity CLI.
-        If a desktop display is available and configured, spawns a visible terminal
-        window on screen so the user can watch the CLI execute in real time.
+        If a desktop display is available and configured:
+          - In 'interactive' mode (default): launches the actual Antigravity CLI TUI
+            directly in the terminal so the user sees the real CLI interface.
+          - In 'print' mode: runs batch mode with a live execution banner and auto-close timer.
         Otherwise falls back to headless subprocess execution.
         """
         cwd = workspace_dir or MemoryManager.get_active_workspace()
         if not Path(cwd).exists():
             cwd = str(Path.home() / "projects")
 
-        # Smart continuation detection: only continue if explicitly requested or prompt asks to continue
+        # Smart continuation detection
         is_continuation = continue_session or bool(
             re.match(r"^(?:continue|resume|keep\s+going|go\s+on)\b", prompt.strip(), re.IGNORECASE)
         )
 
-        cmd = [
-            AGY_BINARY,
-            "--dangerously-skip-permissions"
-        ]
-
-        if is_continuation and cls._has_previous_session and cls._last_workspace == cwd:
-            cmd.append("--continue")
-
-        cmd.extend(["--print", prompt])
-
         can_gui, term_bin = cls.can_spawn_terminal()
         if can_gui and term_bin:
-            return await cls._run_visible_terminal(
-                cmd=cmd,
-                prompt=prompt,
-                cwd=cwd,
-                term_bin=term_bin,
-                timeout=timeout,
-                status_callback=status_callback
-            )
+            if AGY_UI_MODE == "interactive":
+                return await cls._run_interactive_terminal(
+                    prompt=prompt,
+                    cwd=cwd,
+                    term_bin=term_bin,
+                    is_continuation=is_continuation,
+                    timeout=timeout,
+                    status_callback=status_callback
+                )
+            else:
+                cmd = [
+                    AGY_BINARY,
+                    "--dangerously-skip-permissions"
+                ]
+                if is_continuation and cls._has_previous_session and cls._last_workspace == cwd:
+                    cmd.append("--continue")
+                cmd.extend(["--print", prompt])
+
+                return await cls._run_visible_terminal(
+                    cmd=cmd,
+                    prompt=prompt,
+                    cwd=cwd,
+                    term_bin=term_bin,
+                    timeout=timeout,
+                    status_callback=status_callback
+                )
         else:
+            cmd = [
+                AGY_BINARY,
+                "--dangerously-skip-permissions"
+            ]
+            if is_continuation and cls._has_previous_session and cls._last_workspace == cwd:
+                cmd.append("--continue")
+            cmd.extend(["--print", prompt])
+
             return await cls._run_headless(
                 cmd=cmd,
                 prompt=prompt,
@@ -145,6 +165,162 @@ class AntigravityRunner:
                 timeout=timeout,
                 status_callback=status_callback
             )
+
+    @classmethod
+    async def _run_interactive_terminal(
+        cls,
+        prompt: str,
+        cwd: str,
+        term_bin: str,
+        is_continuation: bool,
+        timeout: int,
+        status_callback: Optional[Callable[[str], None]] = None
+    ) -> str:
+        """
+        Launches the actual full Antigravity CLI TUI directly in a visible terminal
+        window on the user's screen using interactive mode (`agy -i <prompt>`).
+        Monitors the session transcript live to provide real-time updates and capture
+        the final turn result for Telegram.
+        """
+        if status_callback:
+            status_callback(f"🖥️ Opening Antigravity interactive CLI on your screen...")
+
+        start_time = time.time()
+        brain_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain"
+
+        agy_args = [
+            AGY_BINARY,
+            "--dangerously-skip-permissions"
+        ]
+        if is_continuation and cls._has_previous_session and cls._last_workspace == cwd:
+            agy_args.append("--continue")
+        agy_args.extend(["-i", prompt])
+
+        win_title = f"Antigravity CLI - {Path(cwd).name}"
+        if "gnome-terminal" in term_bin:
+            term_cmd = [term_bin, f"--title={win_title}", "--working-directory", cwd, "--"] + agy_args
+        elif "x-terminal-emulator" in term_bin:
+            cmd_str = " ".join(shlex.quote(c) for c in agy_args)
+            term_cmd = [term_bin, "-T", win_title, "-e", f"bash -c 'cd {shlex.quote(cwd)} && {cmd_str}'"]
+        else:
+            cmd_str = " ".join(shlex.quote(c) for c in agy_args)
+            term_cmd = [term_bin, "-e", f"bash -c 'cd {shlex.quote(cwd)} && {cmd_str}'"]
+
+        env = os.environ.copy()
+        if "DISPLAY" not in env:
+            env["DISPLAY"] = ":0"
+        if "WAYLAND_DISPLAY" not in env and Path("/run/user/1000/wayland-0").exists():
+            env["WAYLAND_DISPLAY"] = "wayland-0"
+
+        logger.info(f"Spawning interactive agy TUI in {cwd}: '{prompt[:80]}...'")
+
+        proc = await asyncio.create_subprocess_exec(
+            *term_cmd,
+            cwd=cwd,
+            env=env,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL
+        )
+        cls._active_process = proc
+        cls._active_task_info = {
+            "prompt": prompt,
+            "workspace": cwd,
+            "start_time": start_time,
+            "terminal": True,
+            "mode": "interactive"
+        }
+
+        # Locate the transcript file created or updated for this session
+        transcript_file = None
+        for _ in range(30):
+            try:
+                if brain_dir.exists():
+                    candidates = sorted(
+                        brain_dir.glob("*/.system_generated/logs/transcript.jsonl"),
+                        key=lambda x: x.stat().st_mtime,
+                        reverse=True
+                    )
+                    if candidates and candidates[0].stat().st_mtime >= start_time - 3.0:
+                        transcript_file = candidates[0]
+                        break
+            except Exception:
+                pass
+            await asyncio.sleep(0.5)
+
+        logger.info(f"Interactive agy transcript located: {transcript_file}")
+
+        # Monitor transcript for live status & final response
+        response_content = None
+        last_step_idx = -1
+        last_status_time = time.time()
+
+        try:
+            while True:
+                if time.time() - start_time > timeout:
+                    cls.kill_active()
+                    return f"⏱️ Antigravity interactive session timed out after {timeout} seconds."
+
+                if transcript_file and transcript_file.exists():
+                    try:
+                        lines = transcript_file.read_text(encoding="utf-8", errors="replace").splitlines()
+                        for line in lines:
+                            if not line.strip():
+                                continue
+                            data = json.loads(line)
+                            step_idx = data.get("step_index", 0)
+                            step_type = data.get("type")
+                            status = data.get("status")
+                            tool_calls = data.get("tool_calls", [])
+
+                            if step_idx > last_step_idx:
+                                now = time.time()
+                                if tool_calls and (now - last_status_time > 2.5):
+                                    tool_name = tool_calls[0].get("name", "tool")
+                                    raw_args = tool_calls[0].get("argumentsJson", "")
+                                    desc = f"{tool_name}: {raw_args[:50]}" if raw_args else tool_name
+                                    if status_callback:
+                                        status_callback(f"⚙️ `[agy] {desc}`")
+                                    last_status_time = now
+
+                                if step_type == "PLANNER_RESPONSE" and status == "DONE" and not tool_calls:
+                                    response_content = data.get("content", "").strip()
+
+                                last_step_idx = step_idx
+
+                        if response_content:
+                            break
+                    except Exception as e:
+                        logger.debug(f"Error reading transcript: {e}")
+
+                await asyncio.sleep(1.0)
+
+            duration = round(time.time() - start_time, 2)
+            cls._has_previous_session = True
+            cls._last_workspace = cwd
+            cls._last_execution = {
+                "prompt": prompt[:100],
+                "workspace": cwd,
+                "duration_seconds": duration,
+                "returncode": 0,
+                "timestamp": time.strftime("%Y-%m-%d %H:%M:%S")
+            }
+
+            if not response_content:
+                response_content = "✅ Antigravity completed the task successfully in your terminal."
+
+            if len(response_content) > 3500:
+                truncated = response_content[:3400]
+                num_backticks = truncated.count("```")
+                if num_backticks % 2 != 0:
+                    truncated += "\n```"
+                response_content = truncated + "\n\n... [output truncated for Telegram]"
+
+            return response_content
+
+        finally:
+            cls._active_process = None
+            cls._active_pid = None
+            cls._active_task_info = None
 
     @classmethod
     async def _run_visible_terminal(
@@ -168,7 +344,6 @@ class AntigravityRunner:
         if status_callback:
             status_callback(f"🖥️ Spawning Antigravity terminal for `{Path(cwd).name}` on screen...")
 
-        # Quote command for shell execution
         cmd_str = " ".join(shlex.quote(c) for c in cmd)
         prompt_preview = (prompt[:120] + "...") if len(prompt) > 120 else prompt
         prompt_preview_clean = prompt_preview.replace('"', '\\"').replace('$', '\\$')
@@ -293,7 +468,6 @@ read -t 15 -n 1 -s
 
                 await asyncio.sleep(0.5)
 
-            # Read full output from session log
             out_str = ""
             if log_path.exists():
                 out_str = log_path.read_text(encoding="utf-8", errors="replace").strip()
@@ -318,7 +492,6 @@ read -t 15 -n 1 -s
             if not out_str:
                 return "✅ Antigravity completed the task successfully (no text output)."
 
-            # Truncate if ridiculously long (> 3500 chars for Telegram message limits)
             if len(out_str) > 3500:
                 truncated = out_str[:3400]
                 num_backticks = truncated.count("```")

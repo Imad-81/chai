@@ -42,6 +42,7 @@ WHISPER_DEVICE = os.getenv("WHISPER_DEVICE", "cpu")
 AGY_BINARY = os.getenv("AGY_BINARY", str(Path.home() / ".local" / "bin" / "agy"))
 AGY_SPAWN_TERMINAL = os.getenv("AGY_SPAWN_TERMINAL", "true").lower() in ("true", "1", "yes")
 AGY_TERMINAL_EMULATOR = os.getenv("AGY_TERMINAL_EMULATOR", "gnome-terminal")
+AGY_UI_MODE = os.getenv("AGY_UI_MODE", "interactive").lower()
 PROJECTS_ROOT = Path(os.getenv("PROJECTS_ROOT", str(Path.home() / "projects")))
 DEFAULT_WORKSPACE = str(BASE_DIR)
 
