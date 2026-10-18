@@ -108,7 +108,17 @@ class Dispatcher:
         
         # Resolve ambiguous pronouns and follow-ups with dedicated MemoryAgent
         resolved_ctx = await MemoryAgent.resolve_context(task_prompt, sender_jid, active_path)
-        synthesized_prompt = resolved_ctx.resolved_prompt
+        base_prompt = resolved_ctx.resolved_prompt
+
+        # Synthesize into high-signal engineering specification
+        if status_updater:
+            status_updater("🧠 Refining task specification...")
+
+        synthesized_prompt = await ContextEngine.synthesize_antigravity_task(
+            prompt=base_prompt,
+            sender_jid=sender_jid,
+            workspace_path=active_path
+        )
 
         can_gui, _ = AntigravityRunner.can_spawn_terminal()
         mode_note = " (🖥️ terminal opened on your screen)" if can_gui else ""

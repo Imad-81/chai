@@ -11,6 +11,7 @@ from config import (
     MEMORY_AUTO_SUMMARIZE, 
     OLLAMA_HOST
 )
+from sqlmodel import select
 from core.db import get_session, MessageRecord, SessionRecord
 from core.memory import MemoryManager
 from core.logger import get_logger

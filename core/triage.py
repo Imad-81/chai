@@ -115,7 +115,7 @@ class FastTriage:
                 reply = RepoInspector.get_last_commit(target)
             return {"action": "DIRECT_REPLY", "reply": reply}
 
-        if RE_GIT_STATUS.search(text):
+        if RE_GIT_STATUS.search(text) and not re.search(r"\b(?:commit|push|pull|fix|reset|checkout|add)\b", text, re.IGNORECASE):
             target = RepoInspector.resolve_target_repo(text)
             reply = RepoInspector.get_git_status(target)
             return {"action": "DIRECT_REPLY", "reply": reply}
@@ -161,7 +161,8 @@ class FastTriage:
     )
 
     RE_DEV_AMBIGUOUS = re.compile(
-        r"\b(?:check|deploy|install|setup|configure|restart|status|process|port|script|file|repo|server|docker)\b",
+        r"\b(?:check|deploy|install|setup|configure|restart|status|process|port|scripts?|files?|repos?|server|docker|"
+        r"commit|push|pull|branch|uncommitted|changes|stash|merge|tests?|build|compile|update|edit|code|fix)\b",
         re.IGNORECASE
     )
 
@@ -169,17 +170,17 @@ class FastTriage:
     async def classify_ambiguous(cls, user_text: str) -> str:
         """
         Tier 1: High-Speed Triage for unpatterned queries.
-        Recognizes question patterns instantly as CHAT without LLM call.
+        Developer actions take priority over generic conversation.
         """
         text = user_text.strip()
 
-        # Instant check: Questions and conversational queries default to CHAT (< 0.1ms)
-        if cls.RE_QUESTION_WORDS.search(text):
-            return "CHAT"
-
-        # Check for developer/system verbs
+        # Check for developer/system actions first
         if cls.RE_DEV_AMBIGUOUS.search(text):
             return "ANTIGRAVITY"
+
+        # Questions and conversational queries default to CHAT (< 0.1ms)
+        if cls.RE_QUESTION_WORDS.search(text):
+            return "CHAT"
 
         # Safe default is CHAT (single-pass conversational generation)
         return "CHAT"

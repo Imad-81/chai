@@ -1,8 +1,12 @@
 import os
 import subprocess
+import asyncio
+import re
 from pathlib import Path
 from typing import Dict, Any, List, Optional
-from config import PROJECTS_ROOT, BASE_DIR
+import ollama
+
+from config import PROJECTS_ROOT, BASE_DIR, DISPATCHER_MODEL, TASK_SYNTHESIZER_MODEL
 from core.memory import MemoryManager
 from core.repo_inspector import RepoInspector
 from core.logger import get_logger
@@ -140,3 +144,89 @@ class ContextEngine:
             return synthesized
 
         return current_prompt
+
+    RE_DIRECT_COMMAND = re.compile(
+        r"^(?:git|pytest|npm|yarn|pnpm|bun|cargo|mvn|docker|python|python3|pip|bash|sh|curl|wget)\b|"
+        r"^(?:ls|cd|pwd|cat|grep|kill|ps)\b",
+        re.IGNORECASE
+    )
+
+    @classmethod
+    async def synthesize_antigravity_task(
+        cls, 
+        prompt: str, 
+        sender_jid: str, 
+        workspace_path: str,
+        timeout: float = 4.5
+    ) -> str:
+        """
+        Transforms casual user speech / voice notes into a structured engineering specification
+        using TASK_SYNTHESIZER_MODEL before handing to the Antigravity CLI runner.
+        Bypasses synthesis for direct shell commands or already structured inputs.
+        """
+        clean = prompt.strip()
+
+        # 1. Fast Bypass Check: Direct terminal / shell commands (e.g. 'git status', 'pytest')
+        if cls.RE_DIRECT_COMMAND.match(clean) or clean.startswith("/"):
+            logger.info(f"TaskSynthesizer: Bypassing synthesis for direct command '{clean}'")
+            return clean
+
+        # 2. Gather active context
+        ws = cls.get_active_workspace_summary()
+        recent_turns = MemoryManager.get_active_session_history(sender_jid, limit=3, exclude_last_if_current=True)
+        facts = MemoryManager.get_relevant_facts(workspace=workspace_path, limit=3)
+
+        turns_snippet = ""
+        if recent_turns:
+            lines = [f"{'User' if t['role'] == 'user' else 'Assistant'}: {t['content'][:120].replace(chr(10), ' ')}" for t in recent_turns]
+            turns_snippet = "Recent Conversation:\n" + "\n".join(lines) + "\n\n"
+
+        facts_snippet = ""
+        if facts:
+            facts_snippet = "Known Project Facts:\n" + "\n".join(f"• {f}" for f in facts) + "\n\n"
+
+        synthesis_prompt = (
+            f"You are a Staff Software Engineer preparing a high-signal task specification for an autonomous developer agent (Antigravity).\n\n"
+            f"Workspace Context:\n"
+            f"• Project: {ws['name']} ({ws['path']})\n"
+            f"• Tech Stack: {ws['tech_stack']}\n"
+            f"• Branch: {ws['branch']} {'(dirty)' if ws['dirty'] else '(clean)'}\n"
+            f"• Latest Commit: {ws['last_commit']}\n\n"
+            f"{facts_snippet}"
+            f"{turns_snippet}"
+            f"User Prompt: \"{clean}\"\n\n"
+            f"Convert this prompt into a concise, actionable engineering specification.\n"
+            f"Rules:\n"
+            f"1. Clearly state the engineering goal and expected outcome.\n"
+            f"2. Reference relevant project components or files if implied.\n"
+            f"3. Include safety/verification instructions (e.g. run tests, avoid breaking existing behavior).\n"
+            f"4. DO NOT dictate exact code implementations. State WHAT needs to be done, leaving HOW to the coding agent.\n\n"
+            f"Output the specification directly without conversational preamble or markdown fences."
+        )
+
+        try:
+            res = await asyncio.wait_for(
+                asyncio.to_thread(
+                    ollama.chat,
+                    model=TASK_SYNTHESIZER_MODEL,
+                    messages=[{"role": "user", "content": synthesis_prompt}],
+                    options={"temperature": 0.2, "num_predict": 256}
+                ),
+                timeout=timeout
+            )
+            msg_obj = res.get("message", {})
+            synthesized = (msg_obj.get("content") or getattr(msg_obj, "content", "") or "").strip()
+            if not synthesized:
+                thinking = getattr(msg_obj, "thinking", None) or (msg_obj.get("thinking") if isinstance(msg_obj, dict) else None)
+                if thinking:
+                    synthesized = str(thinking).strip()
+
+            if synthesized and len(synthesized) >= 15:
+                logger.info(f"TaskSynthesizer: Enhanced prompt for AGY:\n{synthesized[:100]}...")
+                return synthesized
+        except asyncio.TimeoutError:
+            logger.warning(f"TaskSynthesizer: Task synthesis timed out after {timeout}s, falling back to prompt.")
+        except Exception as e:
+            logger.warning(f"TaskSynthesizer: Synthesis fallback due to: {e}")
+
+        return clean

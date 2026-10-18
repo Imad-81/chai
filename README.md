@@ -24,6 +24,7 @@ Chai allows you to manage software repositories, run agentic coding tasks via An
   - Fetches branches, commit logs, uncommitted changes, remotes, and detects repository tech stacks directly without model hallucinations.
 - 💻 **Antigravity CLI (`agy`) Runner & Interactive Screen Sessions**:
   - Dispatches tasks directly to Google Antigravity (`agy`) in the active workspace.
+  - **Autonomous Task Synthesizer**: Converts informal Telegram voice notes and conversational requests into crisp, structured engineering specifications with goals, scope, and safety constraints before dispatching to Antigravity.
   - **Live Visible Terminal**: When running on a graphical Linux desktop (`DISPLAY` or `WAYLAND_DISPLAY`), Chai can spawn a visible terminal emulator (e.g. `gnome-terminal`, `xterm`) running `agy` in native interactive TUI mode (`AGY_UI_MODE=interactive`), allowing you to observe and interact with the agent in real time on your screen.
   - **Headless Fallback**: Automatically streams output to logs with task tracking and kill controls (`/debug agy kill`) when running in headless environments.
 - 💬 **In-Place Status Updates**:
