@@ -96,6 +96,12 @@ class AntigravityRunner:
         return False, "No Antigravity task is currently executing."
 
     @classmethod
+    def reset_session(cls):
+        """Resets the Antigravity session continuation state."""
+        cls._has_previous_session = False
+        cls._last_workspace = None
+
+    @classmethod
     async def run_prompt(
         cls, 
         prompt: str, 
@@ -117,9 +123,12 @@ class AntigravityRunner:
             cwd = str(Path.home() / "projects")
 
         # Smart continuation detection
-        is_continuation = continue_session or bool(
-            re.match(r"^(?:continue|resume|keep\s+going|go\s+on)\b", prompt.strip(), re.IGNORECASE)
-        )
+        if continue_session is not None:
+            is_continuation = bool(continue_session)
+        else:
+            is_continuation = bool(
+                re.match(r"^(?:continue|resume|keep\s+going|go\s+on)\b", prompt.strip(), re.IGNORECASE)
+            )
 
         can_gui, term_bin = cls.can_spawn_terminal()
         if can_gui and term_bin:
@@ -137,7 +146,7 @@ class AntigravityRunner:
                     AGY_BINARY,
                     "--dangerously-skip-permissions"
                 ]
-                if is_continuation and cls._has_previous_session and cls._last_workspace == cwd:
+                if is_continuation:
                     cmd.append("--continue")
                 cmd.extend(["--print", prompt])
 
@@ -154,7 +163,7 @@ class AntigravityRunner:
                 AGY_BINARY,
                 "--dangerously-skip-permissions"
             ]
-            if is_continuation and cls._has_previous_session and cls._last_workspace == cwd:
+            if is_continuation:
                 cmd.append("--continue")
             cmd.extend(["--print", prompt])
 
@@ -188,11 +197,30 @@ class AntigravityRunner:
         start_time = time.time()
         brain_dir = Path.home() / ".gemini" / "antigravity-cli" / "brain"
 
+        # Check initial max step index on existing transcript if continuing
+        initial_step_count = 0
+        if is_continuation and brain_dir.exists():
+            try:
+                candidates = sorted(
+                    brain_dir.glob("*/.system_generated/logs/transcript.jsonl"),
+                    key=lambda x: x.stat().st_mtime,
+                    reverse=True
+                )
+                if candidates:
+                    for line in candidates[0].read_text(encoding="utf-8", errors="replace").splitlines():
+                        if line.strip():
+                            try:
+                                initial_step_count = max(initial_step_count, json.loads(line).get("step_index", 0) + 1)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
         agy_args = [
             AGY_BINARY,
             "--dangerously-skip-permissions"
         ]
-        if is_continuation and cls._has_previous_session and cls._last_workspace == cwd:
+        if is_continuation:
             agy_args.append("--continue")
         agy_args.extend(["-i", prompt])
 
@@ -251,7 +279,7 @@ class AntigravityRunner:
 
         # Monitor transcript for live status & final response
         response_content = None
-        last_step_idx = -1
+        last_step_idx = initial_step_count - 1
         last_status_time = time.time()
 
         try:

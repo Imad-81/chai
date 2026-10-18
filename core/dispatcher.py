@@ -106,31 +106,58 @@ class Dispatcher:
     ) -> Dict[str, Any]:
         active_path = MemoryManager.get_active_workspace()
         
+        # Check if user explicitly asked for a fresh/new conversation
+        is_explicit_new = bool(re.search(
+            r"^(?:new\s+(?:chat|session|task|conversation)|start\s+fresh|fresh\s+chat)\b", 
+            task_prompt.strip(), 
+            re.IGNORECASE
+        ))
+
+        # Check if we should continue an existing AGY conversation in this workspace
+        has_existing_agy = MemoryManager.get_session_agy_state(sender_jid, active_path)
+        is_continuation = has_existing_agy and not is_explicit_new
+
+        if is_explicit_new:
+            MemoryManager.reset_session_agy_state(sender_jid)
+            task_prompt = re.sub(
+                r"^(?:new\s+(?:chat|session|task|conversation)|start\s+fresh|fresh\s+chat)[:\s,]*", 
+                "", 
+                task_prompt, 
+                flags=re.IGNORECASE
+            ).strip()
+
         # Resolve ambiguous pronouns and follow-ups with dedicated MemoryAgent
         resolved_ctx = await MemoryAgent.resolve_context(task_prompt, sender_jid, active_path)
         base_prompt = resolved_ctx.resolved_prompt
 
-        # Synthesize into high-signal engineering specification
+        # Synthesize into high-signal instruction (concise, 1-2 sentences)
         if status_updater:
-            status_updater("🧠 Refining task specification...")
+            status_updater("🧠 Refining task instruction...")
 
         synthesized_prompt = await ContextEngine.synthesize_antigravity_task(
             prompt=base_prompt,
             sender_jid=sender_jid,
-            workspace_path=active_path
+            workspace_path=active_path,
+            is_continuation=is_continuation
         )
 
         can_gui, _ = AntigravityRunner.can_spawn_terminal()
         mode_note = " (🖥️ terminal opened on your screen)" if can_gui else ""
+        cont_note = " (continuing chat)" if is_continuation else ""
         if status_updater:
-            status_updater(f"🤖 Antigravity CLI dispatched in `{active_path}`{mode_note}...")
+            status_updater(f"🤖 Antigravity CLI dispatched in `{active_path}`{cont_note}{mode_note}...")
 
         output = await AntigravityRunner.run_prompt(
             prompt=synthesized_prompt,
             workspace_dir=active_path,
             timeout=300,
+            continue_session=is_continuation,
             status_callback=status_updater
         )
+
+        # Mark that Antigravity has executed for this session in this workspace
+        MemoryManager.mark_session_agy_used(sender_jid, active_path)
+
         return cls._format_result({"type": "text", "text": output}, "ANTIGRAVITY", pipeline_start)
 
     @classmethod

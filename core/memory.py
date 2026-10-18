@@ -52,6 +52,7 @@ class MemoryManager:
                         f"Sealing previous session {active_rec.session_id} "
                         f"(idle: {elapsed_minutes:.1f}m > {MEMORY_SESSION_TIMEOUT_MINUTES}m or ws change: {active_rec.workspace} -> {current_ws})"
                     )
+                    cls.reset_session_agy_state(sender_jid)
                     active_rec.is_active = False
                     active_rec.ended_at = now
                     session.add(active_rec)
@@ -100,6 +101,7 @@ class MemoryManager:
             ).order_by(desc(SessionRecord.id)).limit(1)
             active_rec = session.exec(stmt).first()
             if active_rec:
+                cls.reset_session_agy_state(sender_jid)
                 active_rec.is_active = False
                 active_rec.ended_at = now
                 session.add(active_rec)
@@ -110,6 +112,49 @@ class MemoryManager:
                     cls._on_session_sealed(active_rec.session_id, active_rec.turn_count)
                 return active_rec
             return None
+
+    @classmethod
+    def get_session_agy_state(cls, sender_jid: str, workspace: str) -> bool:
+        """Checks if the current active session has an ongoing Antigravity conversation in the workspace."""
+        active_sess = cls.get_active_session(sender_jid)
+        if not active_sess:
+            return False
+        with get_session() as session:
+            stmt = select(WorkspaceState).where(WorkspaceState.key == f"agy_session_{sender_jid}")
+            state = session.exec(stmt).first()
+            if state and state.value == f"{active_sess.session_id}:{workspace}":
+                return True
+        return False
+
+    @classmethod
+    def mark_session_agy_used(cls, sender_jid: str, workspace: str):
+        """Marks that Antigravity has executed for this active session in this workspace."""
+        active_sess = cls.get_or_create_active_session(sender_jid)
+        with get_session() as session:
+            stmt = select(WorkspaceState).where(WorkspaceState.key == f"agy_session_{sender_jid}")
+            state = session.exec(stmt).first()
+            val = f"{active_sess.session_id}:{workspace}"
+            if state:
+                state.value = val
+            else:
+                state = WorkspaceState(key=f"agy_session_{sender_jid}", value=val)
+                session.add(state)
+            session.commit()
+
+    @classmethod
+    def reset_session_agy_state(cls, sender_jid: str):
+        """Clears the Antigravity conversation continuation state."""
+        try:
+            from core.agy_runner import AntigravityRunner
+            AntigravityRunner.reset_session()
+        except Exception:
+            pass
+        with get_session() as session:
+            stmt = select(WorkspaceState).where(WorkspaceState.key == f"agy_session_{sender_jid}")
+            state = session.exec(stmt).first()
+            if state:
+                session.delete(state)
+                session.commit()
 
     @classmethod
     def _on_session_sealed(cls, session_id: str, turn_count: int):

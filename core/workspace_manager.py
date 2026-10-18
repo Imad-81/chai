@@ -57,6 +57,11 @@ class WorkspaceManager:
         path = cls.resolve_project_path(target_name_or_query)
         if path and path.exists():
             MemoryManager.set_active_workspace(str(path))
+            try:
+                from core.agy_runner import AntigravityRunner
+                AntigravityRunner.reset_session()
+            except Exception:
+                pass
             return True, f"Switched active workspace to: `{path.name}` ({path})"
         
         available = ", ".join(f"`{p}`" for p in cls.list_available_projects())

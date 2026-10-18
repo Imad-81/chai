@@ -157,12 +157,13 @@ class ContextEngine:
         prompt: str, 
         sender_jid: str, 
         workspace_path: str,
-        timeout: float = 4.5
+        is_continuation: bool = False,
+        timeout: float = 4.0
     ) -> str:
         """
-        Transforms casual user speech / voice notes into a structured engineering specification
-        using TASK_SYNTHESIZER_MODEL before handing to the Antigravity CLI runner.
-        Bypasses synthesis for direct shell commands or already structured inputs.
+        Transforms casual user speech / voice notes into a concise, direct instruction
+        for Antigravity. Avoids bloated corporate boilerplate or overcomplicating simple tasks.
+        Bypasses synthesis for direct commands or already clear instructions.
         """
         clean = prompt.strip()
 
@@ -171,37 +172,53 @@ class ContextEngine:
             logger.info(f"TaskSynthesizer: Bypassing synthesis for direct command '{clean}'")
             return clean
 
-        # 2. Gather active context
+        # Strip conversational greetings / filler prefixes
+        clean_stripped = re.sub(
+            r"^(?:hey\s+(?:chai\s+)?|please\s+|can\s+you\s+(?:please\s+)?|could\s+you\s+(?:please\s+)?|i\s+want\s+you\s+to\s+)",
+            "",
+            clean,
+            flags=re.IGNORECASE
+        ).strip()
+
+        if clean_stripped and clean_stripped[0].islower():
+            clean_stripped = clean_stripped[0].upper() + clean_stripped[1:]
+
+        # 2. Check if the task is already simple, direct, and unambiguous (e.g. "Commit unstaged changes", "Push to git")
+        words = clean_stripped.split()
+        has_pronouns = bool(re.search(r"\b(?:why|it|that|this|something|thing)\b", clean_stripped, re.IGNORECASE))
+        is_already_direct = (
+            len(words) <= 15 and
+            any(clean_stripped.lower().startswith(action) for action in [
+                "commit", "push", "pull", "update", "fix", "create", "delete", 
+                "remove", "add", "run", "test", "check", "install", "build"
+            ]) and
+            not has_pronouns
+        )
+
+        if is_already_direct:
+            logger.info(f"TaskSynthesizer: Keeping clear direct task as-is: '{clean_stripped}'")
+            return clean_stripped
+
+        # 3. Concise Few-Shot Prompt: Forces 1-2 sentence instruction without boilerplate
         ws = cls.get_active_workspace_summary()
-        recent_turns = MemoryManager.get_active_session_history(sender_jid, limit=3, exclude_last_if_current=True)
-        facts = MemoryManager.get_relevant_facts(workspace=workspace_path, limit=3)
+        continuation_hint = "This is a follow-up in an ongoing conversation. Keep the instruction brief (1 sentence)." if is_continuation else "State the instruction directly in 1-2 sentences."
 
-        turns_snippet = ""
-        if recent_turns:
-            lines = [f"{'User' if t['role'] == 'user' else 'Assistant'}: {t['content'][:120].replace(chr(10), ' ')}" for t in recent_turns]
-            turns_snippet = "Recent Conversation:\n" + "\n".join(lines) + "\n\n"
-
-        facts_snippet = ""
-        if facts:
-            facts_snippet = "Known Project Facts:\n" + "\n".join(f"• {f}" for f in facts) + "\n\n"
-
-        synthesis_prompt = (
-            f"You are a Staff Software Engineer preparing a high-signal task specification for an autonomous developer agent (Antigravity).\n\n"
-            f"Workspace Context:\n"
-            f"• Project: {ws['name']} ({ws['path']})\n"
-            f"• Tech Stack: {ws['tech_stack']}\n"
-            f"• Branch: {ws['branch']} {'(dirty)' if ws['dirty'] else '(clean)'}\n"
-            f"• Latest Commit: {ws['last_commit']}\n\n"
-            f"{facts_snippet}"
-            f"{turns_snippet}"
-            f"User Prompt: \"{clean}\"\n\n"
-            f"Convert this prompt into a concise, actionable engineering specification.\n"
+        system_prompt = (
+            f"You are a developer prompt editor. Rewrite the user's conversational message into a direct, concise 1-2 sentence instruction for a coding agent.\n"
+            f"Active Project: {ws['name']} ({ws['tech_stack']})\n"
+            f"{continuation_hint}\n\n"
             f"Rules:\n"
-            f"1. Clearly state the engineering goal and expected outcome.\n"
-            f"2. Reference relevant project components or files if implied.\n"
-            f"3. Include safety/verification instructions (e.g. run tests, avoid breaking existing behavior).\n"
-            f"4. DO NOT dictate exact code implementations. State WHAT needs to be done, leaving HOW to the coding agent.\n\n"
-            f"Output the specification directly without conversational preamble or markdown fences."
+            f"1. Output ONLY the direct instruction (max 2 sentences).\n"
+            f"2. DO NOT output any headers (no 'Goal:', no 'Expected Outcome:', no 'Engineering Specification').\n"
+            f"3. DO NOT output bullet points or generic boilerplate (like 'run tests', 'ensure nothing breaks').\n"
+            f"4. Focus on WHAT needs to be done clearly and plainly.\n\n"
+            f"Examples:\n"
+            f"User: hey can you please check the bridge folder there is an issue with port 5055 crashing when busy\n"
+            f"Instruction: Fix the server in bridge/ so it handles busy port 5055 gracefully without crashing.\n\n"
+            f"User: tell me what changes are not committed on the repo, and commit\n"
+            f"Instruction: Review uncommitted changes in the repository, stage them, and commit them with a descriptive message.\n\n"
+            f"User: why did it fail\n"
+            f"Instruction: Investigate why the previous step failed and resolve the error."
         )
 
         try:
@@ -209,8 +226,11 @@ class ContextEngine:
                 asyncio.to_thread(
                     ollama.chat,
                     model=TASK_SYNTHESIZER_MODEL,
-                    messages=[{"role": "user", "content": synthesis_prompt}],
-                    options={"temperature": 0.2, "num_predict": 256}
+                    messages=[
+                        {"role": "system", "content": system_prompt},
+                        {"role": "user", "content": f"User: {clean_stripped}\nInstruction:"}
+                    ],
+                    options={"temperature": 0.1, "num_predict": 80}
                 ),
                 timeout=timeout
             )
@@ -221,12 +241,15 @@ class ContextEngine:
                 if thinking:
                     synthesized = str(thinking).strip()
 
-            if synthesized and len(synthesized) >= 15:
-                logger.info(f"TaskSynthesizer: Enhanced prompt for AGY:\n{synthesized[:100]}...")
+            # Clean any leading "Instruction:" or "Task:" labels
+            synthesized = re.sub(r"^(?:Instruction|Task|Prompt):\s*", "", synthesized, flags=re.IGNORECASE).strip()
+
+            if synthesized and len(synthesized) >= 10 and len(synthesized) < 300:
+                logger.info(f"TaskSynthesizer: Concise refined prompt for AGY: '{synthesized}'")
                 return synthesized
         except asyncio.TimeoutError:
             logger.warning(f"TaskSynthesizer: Task synthesis timed out after {timeout}s, falling back to prompt.")
         except Exception as e:
             logger.warning(f"TaskSynthesizer: Synthesis fallback due to: {e}")
 
-        return clean
+        return clean_stripped
