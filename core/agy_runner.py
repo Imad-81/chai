@@ -273,18 +273,8 @@ class AntigravityRunner:
                             tool_calls = data.get("tool_calls", [])
 
                             if step_idx > last_step_idx:
-                                now = time.time()
-                                if tool_calls and (now - last_status_time > 2.5):
-                                    tool_name = tool_calls[0].get("name", "tool")
-                                    raw_args = tool_calls[0].get("argumentsJson", "")
-                                    desc = f"{tool_name}: {raw_args[:50]}" if raw_args else tool_name
-                                    if status_callback:
-                                        status_callback(f"⚙️ `[agy] {desc}`")
-                                    last_status_time = now
-
                                 if step_type == "PLANNER_RESPONSE" and status == "DONE" and not tool_calls:
                                     response_content = data.get("content", "").strip()
-
                                 last_step_idx = step_idx
 
                         if response_content:
@@ -448,24 +438,6 @@ read -t 15 -n 1 -s
                     cls.kill_active()
                     return f"⏱️ Antigravity timed out after {timeout} seconds."
 
-                # Stream status updates from log_path to Telegram
-                if log_path.exists():
-                    try:
-                        with open(log_path, "r", encoding="utf-8", errors="replace") as f:
-                            f.seek(last_pos)
-                            new_text = f.read()
-                            last_pos = f.tell()
-                            if new_text and status_callback:
-                                now = time.time()
-                                for line in new_text.splitlines():
-                                    clean = line.strip()
-                                    if clean and (now - last_status_time > 2.5):
-                                        if len(clean) > 4 and not clean.startswith(("{", "}", "[", "]")):
-                                            status_callback(f"⚙️ `{clean[:70]}`")
-                                            last_status_time = now
-                    except Exception:
-                        pass
-
                 await asyncio.sleep(0.5)
 
             out_str = ""
@@ -551,20 +523,11 @@ read -t 15 -n 1 -s
             last_status_time = time.time()
 
             async def read_stream():
-                nonlocal last_status_time
                 while True:
                     line = await process.stdout.readline()
                     if not line:
                         break
-                    decoded = line.decode("utf-8", errors="replace")
-                    stdout_chunks.append(decoded)
-
-                    now = time.time()
-                    clean = decoded.strip()
-                    if status_callback and clean and (now - last_status_time > 2.5):
-                        if len(clean) > 4 and not clean.startswith(("{", "}", "[", "]")):
-                            status_callback(f"⚙️ `{clean[:70]}`")
-                            last_status_time = now
+                    stdout_chunks.append(line.decode("utf-8", errors="replace"))
 
             stderr_chunks = []
             async def read_stderr():

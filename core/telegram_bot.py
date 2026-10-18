@@ -106,6 +106,43 @@ async def cd_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     success, msg = WorkspaceManager.switch_workspace(target)
     await send_safe_message(update.effective_chat, msg)
 
+class InPlaceStatusTracker:
+    """Manages at most ONE in-place status message on Telegram to prevent spamming notification bubbles."""
+    def __init__(self, chat):
+        self.chat = chat
+        self.status_msg: Optional[Any] = None
+        self._lock = asyncio.Lock()
+
+    async def update(self, text: str):
+        if not text:
+            return
+        async with self._lock:
+            try:
+                if self.status_msg is None:
+                    self.status_msg = await self.chat.send_message(
+                        text, 
+                        parse_mode=constants.ParseMode.MARKDOWN
+                    )
+                else:
+                    await self.status_msg.edit_text(
+                        text, 
+                        parse_mode=constants.ParseMode.MARKDOWN
+                    )
+            except Exception:
+                pass
+
+    async def clear(self):
+        async with self._lock:
+            if self.status_msg:
+                try:
+                    await self.status_msg.delete()
+                except Exception:
+                    pass
+                self.status_msg = None
+
+    def updater_callback(self):
+        return lambda msg: asyncio.create_task(self.update(msg))
+
 async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
     chat = update.effective_chat
@@ -136,16 +173,18 @@ async def handle_text_message(update: Update, context: ContextTypes.DEFAULT_TYPE
     # Send typing action
     await chat.send_action(action=constants.ChatAction.TYPING)
 
-    # Status updater callback for progress pings
-    def status_updater(msg: str):
-        asyncio.create_task(send_safe_message(chat, msg))
+    # In-place status updater: keeps at most 1 status message that edits in-place and clears when done
+    tracker = InPlaceStatusTracker(chat)
 
     try:
         result = await Dispatcher.process_user_input(
             user_text=user_text,
             sender_jid=sender_id,
-            status_updater=status_updater
+            status_updater=tracker.updater_callback()
         )
+
+        # Clear intermediate status message before sending final reply
+        await tracker.clear()
 
         res_type = result.get("type", "text")
         if res_type == "text":
@@ -224,14 +263,15 @@ async def handle_voice_message(update: Update, context: ContextTypes.DEFAULT_TYP
             audio_path=str(temp_path)
         )
 
-        def status_updater(msg: str):
-            asyncio.create_task(send_safe_message(chat, msg))
+        tracker = InPlaceStatusTracker(chat)
 
         result = await Dispatcher.process_user_input(
             user_text=text_content,
             sender_jid=sender_id,
-            status_updater=status_updater
+            status_updater=tracker.updater_callback()
         )
+
+        await tracker.clear()
 
         res_type = result.get("type", "text")
         if res_type == "text":
