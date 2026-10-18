@@ -34,6 +34,7 @@ Classify the user's message into one of these action types:
 Respond ONLY with a valid JSON object matching one of the schemas above. No preamble, no markdown fences."""
 
 from core.triage import FastTriage
+from core.context_engine import ContextEngine
 
 class Dispatcher:
     @classmethod
@@ -80,7 +81,7 @@ class Dispatcher:
                     pipeline_start
                 )
 
-        # 2. Tier 1: Micro-Classifier for Ambiguous Requests (~180ms)
+        # 2. Tier 1: Micro-Classifier for Ambiguous Requests
         intent_cat = await FastTriage.classify_ambiguous(user_text)
         print(f"[Dispatcher] Tier-1 Triage classified '{user_text[:40]}' -> {intent_cat}")
 
@@ -91,8 +92,9 @@ class Dispatcher:
         elif intent_cat == "SWITCH_WORKSPACE":
             return cls._format_result({"type": "text", "text": WorkspaceManager.get_current_workspace_info()}, "WORKSPACE", pipeline_start)
 
-        # 3. Default: Single-Pass Direct Conversational Chat (< 2s)
+        # 3. Default: Grounded Single-Pass Conversational Chat
         return await cls._execute_single_pass_chat(user_text, pipeline_start)
+
     @classmethod
     async def _execute_antigravity(
         cls, 
@@ -101,11 +103,16 @@ class Dispatcher:
         pipeline_start: float
     ) -> Dict[str, Any]:
         active_path = MemoryManager.get_active_workspace()
+        
+        # Synthesize with recent history to resolve pronouns ('it', 'my repo', 'that')
+        recent_history = MemoryManager.get_recent_history(limit=4)
+        synthesized_prompt = ContextEngine.synthesize_multi_turn_task(task_prompt, recent_history)
+
         if status_updater:
             status_updater(f"🤖 Antigravity CLI dispatched in `{active_path}`...")
 
         output = await AntigravityRunner.run_prompt(
-            prompt=task_prompt,
+            prompt=synthesized_prompt,
             workspace_dir=active_path,
             timeout=300,
             status_callback=status_updater
@@ -234,10 +241,11 @@ Output the complete revised markdown text."""
         user_text: str, 
         pipeline_start: float
     ) -> Dict[str, Any]:
-        """Single-pass chat completion without redundant intent routing (TTFT < 800ms)."""
+        """Grounded single-pass chat completion with developer persona and project context."""
         history = MemoryManager.get_recent_history(limit=4)
+        grounded_system_prompt = ContextEngine.build_system_prompt()
         chat_messages = [
-            {"role": "system", "content": "You are Chai, a helpful personal Linux assistant on Telegram. Answer concisely and accurately."}
+            {"role": "system", "content": grounded_system_prompt}
         ]
         chat_messages.extend(history)
         chat_messages.append({"role": "user", "content": user_text})

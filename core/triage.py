@@ -71,6 +71,21 @@ RE_CODE_TRIGGERS = re.compile(
     re.IGNORECASE
 )
 
+from core.repo_inspector import RepoInspector
+
+RE_GIT_COMMITS = re.compile(
+    r"\b(?:last\s+commit|latest\s+commit|recent\s+commits|git\s+log|commit\s+history|who\s+committed)\b",
+    re.IGNORECASE
+)
+RE_GIT_STATUS = re.compile(
+    r"\b(?:git\s+status|git\s+branch|which\s+branch|what\s+branch|uncommitted\s+changes|git\s+diff|modified\s+files)\b",
+    re.IGNORECASE
+)
+RE_PROJECTS_OVERVIEW = re.compile(
+    r"\b(?:my\s+repos|my\s+repositories|my\s+projects|github\s+repos|all\s+projects|list\s+all\s+repos|all\s+repos)\b",
+    re.IGNORECASE
+)
+
 # Preferred lightweight router model tag
 FAST_ROUTER_MODEL = "qwen2.5:0.5b"
 
@@ -91,7 +106,25 @@ class FastTriage:
         if clean in FAST_GREETINGS:
             return {"action": "FAST_CHAT", "reply": FAST_GREETINGS[clean]}
 
-        # 2. Workspace queries
+        # 2. Local Git & Repository Inspection (< 5ms)
+        if RE_GIT_COMMITS.search(text):
+            target = RepoInspector.resolve_target_repo(text)
+            if "recent" in text.lower() or "5" in text or "last few" in text.lower():
+                reply = RepoInspector.get_recent_commits(target, count=5)
+            else:
+                reply = RepoInspector.get_last_commit(target)
+            return {"action": "DIRECT_REPLY", "reply": reply}
+
+        if RE_GIT_STATUS.search(text):
+            target = RepoInspector.resolve_target_repo(text)
+            reply = RepoInspector.get_git_status(target)
+            return {"action": "DIRECT_REPLY", "reply": reply}
+
+        if RE_PROJECTS_OVERVIEW.search(text):
+            reply = RepoInspector.get_all_projects_overview()
+            return {"action": "DIRECT_REPLY", "reply": reply}
+
+        # 3. Workspace queries
         if RE_WORKSPACE_LS.match(text):
             available = "\n".join(f"• `{p}`" for p in WorkspaceManager.list_available_projects())
             current = WorkspaceManager.get_current_workspace_info()
@@ -106,11 +139,11 @@ class FastTriage:
         if RE_WORKSPACE_INFO.match(text):
             return {"action": "DIRECT_REPLY", "reply": WorkspaceManager.get_current_workspace_info()}
 
-        # 3. Direct Code / Developer triggers -> ANTIGRAVITY
+        # 4. Direct Code / Developer triggers -> ANTIGRAVITY
         if RE_CODE_TRIGGERS.search(text):
             return {"action": "ANTIGRAVITY", "task": text}
 
-        # 4. Academic Document triggers -> ASSIGNMENT_CREATE / REVISE
+        # 5. Academic Document triggers -> ASSIGNMENT_CREATE / REVISE
         if RE_ASSIGNMENT_REVISE.search(text):
             return {"action": "ASSIGNMENT_REVISE", "changes": text}
 
