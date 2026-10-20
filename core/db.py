@@ -40,6 +40,7 @@ class SessionRecord(SQLModel, table=True):
     title: Optional[str] = None
     summary: Optional[str] = None
     key_facts: Optional[str] = None # JSON string of extracted facts
+    agy_conversation_id: Optional[str] = Field(default=None, index=True)
     turn_count: int = Field(default=0)
     is_active: bool = Field(default=True, index=True)
     started_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
@@ -82,6 +83,14 @@ def init_db():
                     conn.exec_driver_sql("ALTER TABLE messagerecord ADD COLUMN session_id TEXT")
                 if "workspace" not in cols:
                     conn.exec_driver_sql("ALTER TABLE messagerecord ADD COLUMN workspace TEXT")
+
+            sess_check = conn.exec_driver_sql(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name='sessionrecord'"
+            ).fetchone()
+            if sess_check:
+                sess_cols = [row[1] for row in conn.exec_driver_sql("PRAGMA table_info(sessionrecord)").fetchall()]
+                if "agy_conversation_id" not in sess_cols:
+                    conn.exec_driver_sql("ALTER TABLE sessionrecord ADD COLUMN agy_conversation_id TEXT")
             conn.commit()
 
     SQLModel.metadata.create_all(engine)

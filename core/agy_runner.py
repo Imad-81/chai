@@ -108,10 +108,13 @@ class AntigravityRunner:
         workspace_dir: Optional[str] = None,
         timeout: int = 300,
         continue_session: bool = False,
+        conversation_id: Optional[str] = None,
+        return_details: bool = False,
         status_callback: Optional[Callable[[str], None]] = None
-    ) -> str:
+    ) -> Any:
         """
         Executes a prompt through Antigravity CLI.
+        Supports explicit session pinning via conversation_id.
         If a desktop display is available and configured:
           - In 'interactive' mode (default): launches the actual Antigravity CLI TUI
             directly in the terminal so the user sees the real CLI interface.
@@ -122,8 +125,10 @@ class AntigravityRunner:
         if not Path(cwd).exists():
             cwd = str(Path.home() / "projects")
 
-        # Smart continuation detection
-        if continue_session is not None:
+        # Smart continuation detection (if conversation_id is provided, continuation is explicit)
+        if conversation_id:
+            is_continuation = False
+        elif continue_session is not None:
             is_continuation = bool(continue_session)
         else:
             is_continuation = bool(
@@ -138,6 +143,8 @@ class AntigravityRunner:
                     cwd=cwd,
                     term_bin=term_bin,
                     is_continuation=is_continuation,
+                    conversation_id=conversation_id,
+                    return_details=return_details,
                     timeout=timeout,
                     status_callback=status_callback
                 )
@@ -146,11 +153,13 @@ class AntigravityRunner:
                     AGY_BINARY,
                     "--dangerously-skip-permissions"
                 ]
-                if is_continuation:
+                if conversation_id:
+                    cmd.extend(["--conversation", conversation_id])
+                elif is_continuation:
                     cmd.append("--continue")
                 cmd.extend(["--print", prompt])
 
-                return await cls._run_visible_terminal(
+                res = await cls._run_visible_terminal(
                     cmd=cmd,
                     prompt=prompt,
                     cwd=cwd,
@@ -158,12 +167,18 @@ class AntigravityRunner:
                     timeout=timeout,
                     status_callback=status_callback
                 )
+                if return_details:
+                    return {"text": res, "conversation_id": conversation_id, "duration": 0, "returncode": 0}
+                return res
         else:
             cmd = [
                 AGY_BINARY,
-                "--dangerously-skip-permissions"
+                "--dangerously-skip-permissions",
+                "--output-format", "json"
             ]
-            if is_continuation:
+            if conversation_id:
+                cmd.extend(["--conversation", conversation_id])
+            elif is_continuation:
                 cmd.append("--continue")
             cmd.extend(["--print", prompt])
 
@@ -172,6 +187,7 @@ class AntigravityRunner:
                 prompt=prompt,
                 cwd=cwd,
                 timeout=timeout,
+                return_details=return_details,
                 status_callback=status_callback
             )
 
@@ -183,8 +199,10 @@ class AntigravityRunner:
         term_bin: str,
         is_continuation: bool,
         timeout: int,
+        conversation_id: Optional[str] = None,
+        return_details: bool = False,
         status_callback: Optional[Callable[[str], None]] = None
-    ) -> str:
+    ) -> Any:
         """
         Launches the actual full Antigravity CLI TUI directly in a visible terminal
         window on the user's screen using interactive mode (`agy -i <prompt>`).
@@ -199,7 +217,7 @@ class AntigravityRunner:
 
         # Check initial max step index on existing transcript if continuing
         initial_step_count = 0
-        if is_continuation and brain_dir.exists():
+        if (is_continuation or conversation_id) and brain_dir.exists():
             try:
                 candidates = sorted(
                     brain_dir.glob("*/.system_generated/logs/transcript.jsonl"),
@@ -220,7 +238,9 @@ class AntigravityRunner:
             AGY_BINARY,
             "--dangerously-skip-permissions"
         ]
-        if is_continuation:
+        if conversation_id:
+            agy_args.extend(["--conversation", conversation_id])
+        elif is_continuation:
             agy_args.append("--continue")
         agy_args.extend(["-i", prompt])
 
@@ -332,6 +352,21 @@ class AntigravityRunner:
                 if num_backticks % 2 != 0:
                     truncated += "\n```"
                 response_content = truncated + "\n\n... [output truncated for Telegram]"
+
+            conv_id = conversation_id
+            if not conv_id and transcript_file:
+                try:
+                    conv_id = transcript_file.parent.parent.name
+                except Exception:
+                    pass
+
+            if return_details:
+                return {
+                    "text": response_content,
+                    "conversation_id": conv_id,
+                    "duration": duration,
+                    "returncode": 0
+                }
 
             return response_content
 
@@ -522,8 +557,9 @@ read -t 15 -n 1 -s
         prompt: str,
         cwd: str,
         timeout: int,
+        return_details: bool = False,
         status_callback: Optional[Callable[[str], None]] = None
-    ) -> str:
+    ) -> Any:
         if status_callback:
             status_callback(f"🚀 Invoking Antigravity in `{Path(cwd).name}`...")
 
@@ -584,31 +620,62 @@ read -t 15 -n 1 -s
 
             if process.returncode != 0:
                 logger.warning(f"Antigravity exited with code {process.returncode}: {err_str[:200]}")
-                return f"⚠️ Antigravity exited with code {process.returncode}:\n{err_str or out_str}"
+                err_msg = f"⚠️ Antigravity exited with code {process.returncode}:\n{err_str or out_str}"
+                if return_details:
+                    return {"text": err_msg, "conversation_id": None, "duration": duration, "returncode": process.returncode}
+                return err_msg
 
             cls._has_previous_session = True
             cls._last_workspace = cwd
             logger.info(f"Antigravity task completed in {duration}s")
 
-            if not out_str:
-                return "✅ Antigravity completed the task successfully (no text output)."
+            extracted_conv_id = None
+            clean_text = out_str
+            if "{" in out_str and "}" in out_str:
+                start_idx = out_str.find("{")
+                end_idx = out_str.rfind("}")
+                if start_idx != -1 and end_idx != -1:
+                    try:
+                        j_data = json.loads(out_str[start_idx:end_idx+1])
+                        extracted_conv_id = j_data.get("conversation_id")
+                        if "response" in j_data:
+                            clean_text = j_data.get("response", "").strip()
+                    except Exception:
+                        pass
 
-            if len(out_str) > 3500:
-                truncated = out_str[:3400]
+            if not clean_text:
+                clean_text = "✅ Antigravity completed the task successfully (no text output)."
+
+            if len(clean_text) > 3500 and not return_details:
+                truncated = clean_text[:3400]
                 num_backticks = truncated.count("```")
                 if num_backticks % 2 != 0:
                     truncated += "\n```"
-                out_str = truncated + "\n\n... [output truncated for Telegram]"
+                clean_text = truncated + "\n\n... [output truncated for Telegram]"
 
-            return out_str
+            if return_details:
+                return {
+                    "text": clean_text,
+                    "conversation_id": extracted_conv_id,
+                    "duration": duration,
+                    "returncode": 0
+                }
+
+            return clean_text
 
         except asyncio.TimeoutError:
             cls.kill_active()
             logger.error(f"Antigravity timed out after {timeout}s")
-            return f"⏱️ Antigravity timed out after {timeout} seconds."
+            msg = f"⏱️ Antigravity timed out after {timeout} seconds."
+            if return_details:
+                return {"text": msg, "conversation_id": None, "duration": timeout, "returncode": -1}
+            return msg
         except Exception as e:
             logger.error(f"Failed to run Antigravity CLI: {e}")
-            return f"❌ Failed to run Antigravity CLI: {str(e)}"
+            msg = f"❌ Failed to run Antigravity CLI: {str(e)}"
+            if return_details:
+                return {"text": msg, "conversation_id": None, "duration": 0, "returncode": -1}
+            return msg
         finally:
             cls._active_process = None
             cls._active_pid = None

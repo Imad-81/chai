@@ -388,3 +388,127 @@ class MemoryManager:
         with get_session() as session:
             stmt = select(AssignmentRecord).order_by(desc(AssignmentRecord.id)).limit(1)
             return session.exec(stmt).first()
+
+    @classmethod
+    def list_all_sessions(cls, limit: int = 100) -> List[Dict[str, Any]]:
+        """Lists all conversation sessions ordered by last activity for the Web UI."""
+        with get_session() as session:
+            stmt = select(SessionRecord).order_by(desc(SessionRecord.last_activity_at)).limit(limit)
+            records = session.exec(stmt).all()
+            return [
+                {
+                    "session_id": r.session_id,
+                    "title": r.title or "New Chat",
+                    "workspace": r.workspace,
+                    "turn_count": r.turn_count,
+                    "is_active": r.is_active,
+                    "agy_conversation_id": r.agy_conversation_id,
+                    "started_at": r.started_at.isoformat() if r.started_at else None,
+                    "last_activity_at": r.last_activity_at.isoformat() if r.last_activity_at else None,
+                }
+                for r in records
+            ]
+
+    @classmethod
+    def get_session_by_id(cls, session_id: str) -> Optional[SessionRecord]:
+        """Fetches a session record by its unique session_id."""
+        with get_session() as session:
+            stmt = select(SessionRecord).where(SessionRecord.session_id == session_id)
+            return session.exec(stmt).first()
+
+    @classmethod
+    def create_chat_session(
+        cls, 
+        title: Optional[str] = None, 
+        workspace: Optional[str] = None, 
+        sender_jid: str = "web_user"
+    ) -> SessionRecord:
+        """Explicitly creates a new chat session for the Web UI."""
+        now = datetime.now(timezone.utc)
+        target_ws = workspace or cls.get_active_workspace()
+        new_sid = uuid4().hex[:12]
+        rec = SessionRecord(
+            session_id=new_sid,
+            sender_jid=sender_jid,
+            workspace=target_ws,
+            title=title or "New Chat",
+            is_active=True,
+            turn_count=0,
+            started_at=now,
+            last_activity_at=now
+        )
+        with get_session() as session:
+            session.add(rec)
+            session.commit()
+            session.refresh(rec)
+        logger.info(f"Created Web chat session {new_sid} in '{target_ws}'")
+        return rec
+
+    @classmethod
+    def update_chat_session(
+        cls, 
+        session_id: str, 
+        title: Optional[str] = None, 
+        workspace: Optional[str] = None,
+        agy_conversation_id: Optional[str] = None
+    ) -> Optional[SessionRecord]:
+        """Updates chat session properties."""
+        with get_session() as session:
+            stmt = select(SessionRecord).where(SessionRecord.session_id == session_id)
+            rec = session.exec(stmt).first()
+            if not rec:
+                return None
+            if title is not None:
+                rec.title = title
+            if workspace is not None:
+                rec.workspace = workspace
+            if agy_conversation_id is not None:
+                rec.agy_conversation_id = agy_conversation_id
+            session.add(rec)
+            session.commit()
+            session.refresh(rec)
+            return rec
+
+    @classmethod
+    def set_session_agy_id(cls, session_id: str, agy_id: str):
+        """Sets the Antigravity conversation UUID for a session."""
+        cls.update_chat_session(session_id, agy_conversation_id=agy_id)
+
+    @classmethod
+    def delete_chat_session(cls, session_id: str) -> bool:
+        """Deletes a chat session and all its messages."""
+        with get_session() as session:
+            stmt = select(SessionRecord).where(SessionRecord.session_id == session_id)
+            rec = session.exec(stmt).first()
+            if not rec:
+                return False
+            # Delete associated messages
+            msg_stmt = select(MessageRecord).where(MessageRecord.session_id == session_id)
+            messages = session.exec(msg_stmt).all()
+            for m in messages:
+                session.delete(m)
+            session.delete(rec)
+            session.commit()
+            logger.info(f"Deleted chat session {session_id} and {len(messages)} messages")
+            return True
+
+    @classmethod
+    def get_messages_for_session(cls, session_id: str, limit: int = 200) -> List[Dict[str, Any]]:
+        """Returns message history for a specific chat session in chronological order."""
+        with get_session() as session:
+            stmt = select(MessageRecord).where(
+                MessageRecord.session_id == session_id
+            ).order_by(MessageRecord.id.asc()).limit(limit)
+            records = session.exec(stmt).all()
+            return [
+                {
+                    "id": r.id,
+                    "session_id": r.session_id,
+                    "role": r.role,
+                    "content": r.content,
+                    "content_type": r.content_type,
+                    "audio_path": r.audio_path,
+                    "created_at": r.created_at.isoformat() if r.created_at else None,
+                }
+                for r in records
+            ]

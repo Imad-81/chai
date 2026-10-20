@@ -45,7 +45,8 @@ class Dispatcher:
         cls, 
         user_text: str, 
         sender_jid: str,
-        status_updater: Optional[Any] = None
+        status_updater: Optional[Any] = None,
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """
         Main entry point for processing incoming user input.
@@ -67,7 +68,9 @@ class Dispatcher:
                 res_dict = {"type": "text", "text": fast_match.get("reply", "")}
                 return cls._format_result(res_dict, action, pipeline_start)
             elif action == "ANTIGRAVITY":
-                return await cls._execute_antigravity(fast_match.get("task", user_text), sender_jid, status_updater, pipeline_start)
+                return await cls._execute_antigravity(
+                    fast_match.get("task", user_text), sender_jid, status_updater, pipeline_start, session_id=session_id
+                )
             elif action == "ASSIGNMENT_CREATE":
                 return await cls._execute_assignment_create(
                     fast_match.get("title", "Academic Assignment"),
@@ -96,14 +99,14 @@ class Dispatcher:
         print(f"[Dispatcher] Tier-1 Triage classified '{user_text[:40]}' -> {intent_cat}")
 
         if intent_cat == "ANTIGRAVITY":
-            return await cls._execute_antigravity(user_text, sender_jid, status_updater, pipeline_start)
+            return await cls._execute_antigravity(user_text, sender_jid, status_updater, pipeline_start, session_id=session_id)
         elif intent_cat == "ASSIGNMENT_CREATE":
             return await cls._execute_assignment_create("Academic Assignment", user_text, user_text, status_updater, pipeline_start)
         elif intent_cat == "SWITCH_WORKSPACE":
             return cls._format_result({"type": "text", "text": WorkspaceManager.get_current_workspace_info()}, "WORKSPACE", pipeline_start)
 
         # 3. Default: Grounded Single-Pass Conversational Chat
-        return await cls._execute_single_pass_chat(user_text, sender_jid, pipeline_start)
+        return await cls._execute_single_pass_chat(user_text, sender_jid, pipeline_start, session_id=session_id)
 
     @classmethod
     async def _execute_antigravity(
@@ -111,7 +114,8 @@ class Dispatcher:
         task_prompt: str, 
         sender_jid: str,
         status_updater: Optional[Any], 
-        pipeline_start: float
+        pipeline_start: float,
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         active_path = MemoryManager.get_active_workspace()
         
@@ -122,12 +126,29 @@ class Dispatcher:
             re.IGNORECASE
         ))
 
-        # Check if we should continue an existing AGY conversation in this workspace
-        has_existing_agy = MemoryManager.get_session_agy_state(sender_jid, active_path)
+        session_rec = None
+        agy_conv_id = None
+        if session_id:
+            session_rec = MemoryManager.get_session_by_id(session_id)
+            if session_rec:
+                if session_rec.workspace:
+                    active_path = session_rec.workspace
+                if not is_explicit_new:
+                    agy_conv_id = session_rec.agy_conversation_id
+        else:
+            session_rec = MemoryManager.get_or_create_active_session(sender_jid, active_path)
+            if not is_explicit_new:
+                agy_conv_id = session_rec.agy_conversation_id
+
+        # Check if we should continue an existing AGY conversation
+        has_existing_agy = bool(agy_conv_id) or MemoryManager.get_session_agy_state(sender_jid, active_path)
         is_continuation = has_existing_agy and not is_explicit_new
 
         if is_explicit_new:
             MemoryManager.reset_session_agy_state(sender_jid)
+            if session_rec:
+                MemoryManager.set_session_agy_id(session_rec.session_id, None)
+            agy_conv_id = None
             task_prompt = re.sub(
                 r"^(?:new\s+(?:chat|session|task|conversation)|start\s+fresh|fresh\s+chat)[:\s,]*", 
                 "", 
@@ -160,13 +181,27 @@ class Dispatcher:
         before_docs = FileDetector.snapshot_documents(active_path)
         agy_start_time = time.time()
 
-        output = await AntigravityRunner.run_prompt(
+        agy_res = await AntigravityRunner.run_prompt(
             prompt=synthesized_prompt,
             workspace_dir=active_path,
             timeout=300,
             continue_session=is_continuation,
+            conversation_id=agy_conv_id,
+            return_details=True,
             status_callback=status_updater
         )
+
+        output = ""
+        new_conv_id = None
+        if isinstance(agy_res, dict):
+            output = agy_res.get("text", "")
+            new_conv_id = agy_res.get("conversation_id")
+        else:
+            output = str(agy_res)
+
+        # Pin conversation ID to the active session
+        if new_conv_id and session_rec:
+            MemoryManager.set_session_agy_id(session_rec.session_id, new_conv_id)
 
         # Mark that Antigravity has executed for this session in this workspace
         MemoryManager.mark_session_agy_used(sender_jid, active_path)
@@ -181,6 +216,10 @@ class Dispatcher:
         )
 
         res_payload: Dict[str, Any] = {"type": "text", "text": output}
+        if session_rec:
+            res_payload["session_id"] = session_rec.session_id
+        if new_conv_id or agy_conv_id:
+            res_payload["agy_conversation_id"] = new_conv_id or agy_conv_id
         if detected_docs:
             doc_names = ", ".join(f"`{d.name}`" for d in detected_docs)
             logger.info(f"Antigravity generated documents detected: {doc_names}")
@@ -351,10 +390,18 @@ Output the complete revised markdown text."""
         cls, 
         user_text: str, 
         sender_jid: str,
-        pipeline_start: float
+        pipeline_start: float,
+        session_id: Optional[str] = None
     ) -> Dict[str, Any]:
         """Grounded single-pass chat completion with developer persona, active session history, and project context."""
-        history = MemoryManager.get_active_session_history(sender_jid, limit=6, exclude_last_if_current=True)
+        if session_id:
+            raw_history = MemoryManager.get_messages_for_session(session_id, limit=6)
+            history = [{"role": m["role"], "content": m["content"]} for m in raw_history]
+            if history and history[-1]["role"] == "user":
+                history = history[:-1]
+        else:
+            history = MemoryManager.get_active_session_history(sender_jid, limit=6, exclude_last_if_current=True)
+
         grounded_system_prompt = ContextEngine.build_system_prompt(sender_jid)
         chat_messages = [
             {"role": "system", "content": grounded_system_prompt}

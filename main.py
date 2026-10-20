@@ -26,6 +26,7 @@ from core.dispatcher import Dispatcher
 from core.agy_runner import AntigravityRunner
 from core.logger import get_logger, tail_logs
 from core.telegram_bot import create_telegram_app
+from core.web_api import register_web_routes
 
 logger = get_logger("orchestrator")
 
@@ -130,18 +131,20 @@ async def main():
     # Pre-warm Whisper speech-to-text model in background for instant voice notes
     asyncio.create_task(asyncio.to_thread(VoiceTranscriber.get_model))
 
-    # 2. Setup Diagnostics HTTP Server
-    app = web.Application()
+
+    # 2. Setup HTTP & Web API Server
+    app = web.Application(client_max_size=50 * 1024 * 1024)
     app.router.add_get("/health", handle_health)
     app.router.add_get("/debug/state", handle_debug_state)
     app.router.add_get("/debug/logs", handle_debug_logs)
     app.router.add_post("/webhook", handle_legacy_webhook)
+    register_web_routes(app)
 
     runner = web.AppRunner(app)
     await runner.setup()
-    site = web.TCPSite(runner, "127.0.0.1", PYTHON_WEBHOOK_PORT, reuse_address=True, reuse_port=True)
+    site = web.TCPSite(runner, "0.0.0.0", PYTHON_WEBHOOK_PORT, reuse_address=True, reuse_port=True)
     await site.start()
-    logger.info(f"Diagnostics server listening on http://127.0.0.1:{PYTHON_WEBHOOK_PORT}")
+    logger.info(f"Chai HTTP & Web API server listening on http://0.0.0.0:{PYTHON_WEBHOOK_PORT}")
 
     # 3. Start Telegram Bot
     if TELEGRAM_BOT_TOKEN:
