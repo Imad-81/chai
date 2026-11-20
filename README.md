@@ -1,92 +1,114 @@
 # Chai ☕
 
-An autonomous personal AI Assistant for Linux powered by the **Telegram Bot API**, local LLMs (**Ollama**), and the **Antigravity CLI (`agy`)**.
+An autonomous personal AI assistant and engineering cockpit for Linux and macOS, featuring a modern **ChatGPT/Claude-style Web UI & Mobile PWA (Chai-T)** alongside a native **Telegram Bot**, powered by local LLMs (**Ollama**), **Faster-Whisper STT**, and **Google Antigravity (`agy`)**.
 
-Chai allows you to manage software repositories, run agentic coding tasks via Antigravity, generate professional styled PDF reports, query local git histories, and converse with local LLMs—all from your phone or desktop via Telegram voice notes or text messages.
+Chai allows you to manage software repositories, dispatch agentic coding tasks with persistent session continuation, monitor real-time host telemetry, compile professional styled PDF reports, query local git histories with zero hallucinations, and converse via voice or text—from your desktop browser, mobile phone (over local Wi-Fi PWA), or Telegram.
 
 ---
 
 ## 🌟 Key Capabilities
 
-- 🤖 **Native Telegram Bot**: Pure Python asynchronous client (`python-telegram-bot` v21+) operating via long-polling. Requires **no open ports**, no port forwarding, no webhooks, no QR code scans, and experiences zero session desynchronization.
-- ⚡ **Multi-Tier Fast Triage Engine**:
-  - **Tier 0 (< 0.1ms)**: Deterministic regex and rule-based fast-path for instant chit-chat greetings, workspace switching, direct git inspection, code action triggers, and PDF assignment workflows.
-  - **Tier 1 (< 150ms)**: Ultra-fast micro-classifier powered by a lightweight local model (`qwen2.5:0.5b`) to categorize ambiguous requests.
-  - **Tier 2 / Default**: Grounded single-pass conversational chat via the primary dispatcher model (`gemma4:12b` or custom model).
-- 🧠 **Smart Hierarchical Memory Management**:
-  - **Active Working Memory**: Maintains recent conversational turns within the active session.
-  - **Episodic Sessions**: Automatically tracks sessions, sealing them upon configurable inactivity timeouts (`MEMORY_SESSION_TIMEOUT_MINUTES`, default 30 min) or workspace switches, and generating structured episodic summaries.
-  - **Durable Long-Term Facts**: Manually save technical preferences and persistent facts using `/remember <fact>` and prune them with `/forget <id|keyword>`. Relevant facts are automatically injected into the developer prompt when working in that workspace.
-- 🎯 **Dedicated Memory & Context Agent (`MemoryAgent`)**:
-  - Employs a dedicated local micro-agent (`qwen2.5:0.5b`) to resolve conversational follow-ups and ambiguous pronouns (*"fix it"*, *"why did that happen?"*, *"retry the error"*, *"same thing"*) against working memory in under 150ms before delegating to Antigravity or the LLM.
-- 🔍 **Instant Git & Repo Inspector (`RepoInspector`)**:
-  - Zero-overhead (< 10ms) local git inspector that resolves natural language repository mentions (e.g. *"what was the last commit on chai?"*, *"show git status"*, *"list my repos"*).
-  - Fetches branches, commit logs, uncommitted changes, remotes, and detects repository tech stacks directly without model hallucinations.
-- 💻 **Antigravity CLI (`agy`) Runner & Interactive Screen Sessions**:
-  - Dispatches tasks directly to Google Antigravity (`agy`) in the active workspace.
-  - **Autonomous Task Synthesizer**: Converts informal Telegram voice notes and conversational requests into crisp, structured engineering specifications with goals, scope, and safety constraints before dispatching to Antigravity.
-  - **Live Visible Terminal**: When running on a graphical Linux desktop (`DISPLAY` or `WAYLAND_DISPLAY`), Chai can spawn a visible terminal emulator (e.g. `gnome-terminal`, `xterm`) running `agy` in native interactive TUI mode (`AGY_UI_MODE=interactive`), allowing you to observe and interact with the agent in real time on your screen.
-  - **Headless Fallback**: Automatically streams output to logs with task tracking and kill controls (`/debug agy kill`) when running in headless environments.
-- 💬 **In-Place Status Updates**:
-  - Uses an intelligent single-message tracker (`InPlaceStatusTracker`) on Telegram that edits a single status message in-place and cleans it up upon completion, eliminating notification sound spam and chat bubble clutter.
-- 🎙️ **Local Voice Transcription**:
-  - Offline audio transcription for Telegram voice notes using `faster-whisper` (`base.en` or custom size) running on CPU or CUDA.
-- 📄 **Automatic Document Detection & Telegram Delivery (`FileDetector`)**:
-  - Whenever Antigravity creates or modifies `.pdf` or `.docx` files during an execution (e.g. exporting reports, compiling documentation, converting markdown), Chai automatically detects the new or modified files, captures referenced paths from Antigravity's response, and uploads the actual files directly to Telegram.
-  - Supports instant document retrieval (e.g. *"send me the pdf"*, *"return me the docx"*, *"send report.pdf"*) in < 0.1ms via Tier-0 fast-path without invoking LLM models.
-- 📄 **Styled PDF Document Compiler**:
-  - Compiles academic essays, technical reports, and assignment summaries into formatted PDFs using ReportLab (custom palettes, running headers, pagination, styled code/tables) and uploads them directly to Telegram.
-- 🛠️ **In-Chat Diagnostics & Observability**:
-  - Real-time diagnostic suite with `/status`, `/sysinfo`, `/ping`, `/debug logs [N]`, `/debug memory`, `/debug agy`, and execution timing toggles (`/debug mode on|off`).
-- 🔬 **Offline Component Test Suite**:
-  - Built-in validation script (`scripts/test_pipeline.py`) that tests all 7 internal subsystems (Database, Ollama, Whisper, PDF Compiler, Antigravity CLI, Telegram API, DebugRouter) without requiring external triggers.
+### 💻 Chai-T Multi-Session Web Interface & Mobile PWA
+- **Modern Responsive Web UI**: Built with Next.js 16, React 19, Lucide Icons, and vanilla CSS variables matching modern Claude / ChatGPT dark styling.
+- **Progressive Web App (PWA)**: Includes an offline service worker and web manifest. Installable as a standalone app on iOS, Android, macOS, and Linux.
+- **Mobile Access over Local Wi-Fi**: Automatically discovers your local LAN IP on launch. Open `http://<LOCAL_IP>:3000` on your phone to code and talk with Chai from anywhere on your home or office network.
+- **Real-Time SSE Streaming**: Server-Sent Events (`/api/chat/stream`) stream live agent thoughts, tool execution statuses, and replies to the interface in real time.
+- **In-Browser Voice Memos**: Tap the microphone button in the browser to record voice notes using the MediaRecorder API, with automatic offline transcription powered by local Faster-Whisper (`/api/audio/transcribe`).
+- **Multi-Session Chat Management**: Create new chats, rename threads, delete conversations, auto-title sessions from initial prompts, and search conversation history.
+- **Interactive Workspace Switcher Modal**: Browse discovered projects in `PROJECTS_ROOT`, inspect tech stacks, and switch active repositories with a single click.
+- **Live Host Diagnostics & Telemetry Modal**: Live-polling dashboard showing CPU usage, RAM utilization, disk space, Ollama connectivity, active models, and Antigravity process status.
+- **Rich Code & Document Cards**: GitHub Flavored Markdown (GFM) rendering with code syntax highlighting, one-click clipboard copy, and download cards for generated `.pdf` and `.docx` artifacts.
+
+### 🤖 Native Telegram Bot (Remote & Headless)
+- **Zero Open Ports**: Pure Python asynchronous client (`python-telegram-bot` v21+) operating via long-polling. No port forwarding, reverse proxies, webhooks, or public URLs required.
+- **In-Place Status Updates (`InPlaceStatusTracker`)**: Progress indicators update a single Telegram status bubble in-place and clean it up upon completion, avoiding notification spam and chat clutter.
+- **Offline Voice Notes**: Download and transcribe Telegram voice notes locally using `faster-whisper` (`base.en` or custom model size) on CPU or CUDA.
+- **Autonomous Task Synthesizer**: Converts informal voice notes and casual messages into crisp, structured engineering specifications with goals, scope, and safety constraints.
+
+### 💻 Antigravity CLI (`agy`) Runner & Session Continuer
+- **Persistent Session Continuation**: Associates the Antigravity conversation UUID (`agy_conversation_id`) with each chat session in SQLite. When you ask follow-up coding questions, `agy` continues the active conversation thread rather than restarting from scratch.
+- **Grounded Task Synthesis**: Synthesizes structured developer prompts without AI hallucinations.
+- **Visible Interactive TUI**: When running on a graphical desktop (`DISPLAY` or `WAYLAND_DISPLAY`), Chai can spawn a visible terminal emulator (e.g. `gnome-terminal`, `xterm`) running `agy` in native interactive TUI mode (`AGY_UI_MODE=interactive`), allowing you to observe tool calls live.
+- **Headless Fallback**: Streams output to centralized logs with real-time progress callbacks and emergency process kill controls (`/debug agy kill`).
+
+### 📄 Automatic Document Detection & Delivery (`FileDetector`)
+- **Automatic Document Capture**: When Antigravity or compiler tools generate or edit `.pdf` or `.docx` files, Chai snapshots the filesystem before and after execution, extracts file paths from the output text, and delivers the files.
+- **Dual Delivery**: Uploads documents directly to Telegram as native file attachments and provides instant download cards in the Chai-T Web UI.
+- **Instant Document Fetching**: Retrieve documents (*"send me the pdf"*, *"return me the docx"*, *"send report.pdf"*) in < 0.1ms via Tier-0 fast-path without invoking LLM inference.
+
+### ⚡ Multi-Tier Ultra-Low-Latency Triage Engine
+- **Tier 0 (< 0.1ms)**: Deterministic regex and rule-based fast-path for chit-chat greetings, workspace switching, git inspection, document downloads, and direct code actions.
+- **Tier 1 (< 150ms)**: Ultra-fast micro-classifier powered by a lightweight local model (`qwen2.5:0.5b`) to categorize ambiguous requests.
+- **Tier 2 / Conversational**: Grounded single-pass conversational chat via the primary dispatcher model (`gemma4:12b` or custom model).
+
+### 🧠 Smart Hierarchical Memory Management
+- **Active Working Memory**: Maintains recent conversational turns within the active session.
+- **Episodic Sessions**: Automatically seals sessions upon configurable inactivity timeouts (`MEMORY_SESSION_TIMEOUT_MINUTES`, default 30 min) or workspace switches, generating structured episodic summaries.
+- **Durable Long-Term Facts**: Persist technical preferences and facts using `/remember <fact>` and prune them with `/forget <id|keyword>`. Relevant facts are automatically injected into developer prompts.
+- **Dedicated Memory & Context Agent (`MemoryAgent`)**: Employs a local micro-agent (`qwen2.5:0.5b`) to resolve conversational follow-ups and ambiguous pronouns (*"fix it"*, *"why did that happen?"*, *"retry the error"*) in under 150ms before delegating.
+
+### 🔍 Instant Zero-Hallucination Git Inspector (`RepoInspector`)
+- Zero-overhead (< 10ms) local git inspector that resolves natural language repository mentions (e.g. *"what was the last commit on chai?"*, *"show git status"*, *"list my repos"*).
+- Fetches branches, commit logs, uncommitted changes, remotes, and detects tech stacks directly without model hallucinations.
+
+### 📄 Styled PDF Document Compiler (`PDFCompiler`)
+- Generates formatted academic essays, technical reports, and assignment summaries using ReportLab (custom palettes, running headers, pagination, styled code blocks and tables).
 
 ---
 
 ## 🏗️ System Architecture
 
 ```
-                    Telegram Cloud (Mobile / Desktop Clients)
-                                       │
-                                       ▼ Long Polling (HTTPS - No open ports)
-               ┌─────────────────────────────────────────────────────────┐
-               │              Chai Assistant (main.py)                   │
-               │            python-telegram-bot + aiohttp                │
-               └───────────┬─────────────────────────────────┬───────────┘
-                           │                                 │
-                           ▼                                 ▼
-              ┌──────────────────────────┐     ┌──────────────────────────┐
-              │    Fast Triage Engine    │     │   DebugRouter & System   │
-              │ Tier 0: Regex (<0.1ms)   │     │ (/status, /ping, /debug, │
-              │ Tier 1: Micro-Classifier │     │  /projects, /cd, /mode)  │
-              └────────────┬─────────────┘     └──────────────────────────┘
-                           │
-       ┌───────────────────┼────────────────────────┐
-       ▼                   ▼                        ▼
-┌──────────────┐  ┌───────────────────┐  ┌──────────────────────┐
-│ Voice Notes  │  │   ContextEngine   │  │   Smart Memory       │
-│ faster-      │  │  & RepoInspector  │  │ • Working Memory     │
-│ whisper ASR  │  │ (Local Git & Persona)│ • Episodic Sessions  │
-└──────┬───────┘  └────────┬──────────┘  │ • Durable Facts      │
-       │                   │             │ • MemoryAgent (0.5B) │
-       │                   │             └──────────┬───────────┘
-       └──────────────┐    │                        │
-                      ▼    ▼                        ▼
-               ┌─────────────────────────────────────────┐
-               │            Dispatcher Router            │
-               └───────────┬─────────────────┬───────────┘
-                           │                 │
-            ┌──────────────┴──────┐   ┌──────┴──────────────────────┐
-            │   Ollama Local LLM  │   │     Antigravity Runner      │
-            │  (gemma4:12b /      │   │         (`agy` CLI)         │
-            │   qwen2.5:0.5b)     │   │  • Visible Interactive TUI  │
-            └──────────────┬──────┘   │  • Headless Subprocess      │
-                           │          └─────────────────────────────┘
-                           ▼
-            ┌─────────────────────────────┐
-            │     ReportLab Compiler      │
-            │  (Styled Assignment PDFs)   │
-            └─────────────────────────────┘
+                    ┌─────────────────────────────────────────┐
+                    │      Clients & Interfaces               │
+                    ├────────────────────┬────────────────────┤
+                    │   Chai-T Web UI    │    Telegram App    │
+                    │   & Mobile PWA     │  (Mobile & Desktop)│
+                    │(http://<LAN>:3000) │                    │
+                    └─────────┬──────────┴─────────┬──────────┘
+                              │                    │
+              HTTP / REST / SSE Rewrites           │ HTTPS Long Polling
+                              │                    │ (No open ports)
+                              ▼                    ▼
+                    ┌─────────────────────────────────────────┐
+                    │       Chai Core Backend (main.py)       │
+                    │      aiohttp (0.0.0.0:5055) + PTB       │
+                    └─────────────────────┬───────────────────┘
+                                          │
+            ┌─────────────────────────────┼─────────────────────────────┐
+            ▼                             ▼                             ▼
+┌──────────────────────────┐  ┌───────────────────────┐  ┌─────────────────────────┐
+│    Fast Triage Engine    │  │     Web REST & SSE    │  │   DebugRouter & System  │
+│ Tier 0: Regex (<0.1ms)   │  │   (/api/chat/stream,  │  │ (/status, /ping, /debug,│
+│ Tier 1: Micro-Classifier │  │   /api/sessions, etc.)│  │  /projects, /cd, /mode) │
+└───────────┬──────────────┘  └───────────┬───────────┘  └─────────────────────────┘
+            │                             │
+            ├─────────────────────────────┘
+            ▼
+┌──────────────────────────────────────────────────────────────────────────────┐
+│                            Dispatcher Orchestrator                           │
+└───────┬──────────────┬──────────────┬──────────────┬──────────────┬──────────┘
+        │              │              │              │              │
+        ▼              ▼              ▼              ▼              ▼
+┌──────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────┐ ┌────────────────┐
+│    Voice     │ │   Smart    │ │    Repo    │ │   File     │ │   Context      │
+│ Transcriber  │ │   Memory   │ │ Inspector  │ │  Detector  │ │    Engine      │
+│   (Faster-   │ │ (Sessions, │ │ (Git logs, │ │ (PDF/DOCX  │ │  (Autonomous   │
+│   Whisper)   │ │  Facts, Qwen)│ status)    │ │  delivery) │ │Task Synthesizer│
+└──────────────┘ └────────────┘ └────────────┘ └────────────┘ └───────┬────────┘
+                                                                      │
+                               ┌──────────────────────────────────────┴────────┐
+                               ▼                                               ▼
+                ┌──────────────────────────────┐                ┌──────────────────────────────┐
+                │       Ollama Local LLM       │                │      Antigravity Runner      │
+                │ (gemma4:12b / qwen2.5:0.5b)  │                │          (`agy` CLI)         │
+                └──────────────┬───────────────┘                │ • Session Continuation       │
+                               │                                │ • Visible Interactive TUI    │
+                               ▼                                │ • Headless Stream & Tracking │
+                ┌──────────────────────────────┐                └──────────────────────────────┘
+                │     ReportLab Compiler       │
+                │   (Styled Academic PDFs)     │
+                └──────────────────────────────┘
 ```
 
 ---
@@ -95,19 +117,22 @@ Chai allows you to manage software repositories, run agentic coding tasks via An
 
 ### 1. Prerequisites
 
-- **Linux OS** (Ubuntu, Debian, Fedora, Arch, etc.)
-- **Python 3.10+**
+- **OS**: Linux (Ubuntu, Debian, Fedora, Arch) or macOS
+- **Python**: 3.10+
+- **Node.js**: 18+ and npm (for the Next.js Chai-T Web UI)
 - **[Ollama](https://ollama.com/)** running locally:
   ```bash
   ollama serve
   ```
-  Pull the primary assistant model and the lightweight triage/memory resolver model:
+  Pull the primary model and the micro triage/memory model:
   ```bash
   ollama pull gemma4:12b
   ollama pull qwen2.5:0.5b
   ```
-- **[Antigravity CLI (`agy`)](https://github.com/google/antigravity)** installed and accessible in your `PATH` or configured via `AGY_BINARY`.
-- *(Optional for visible TUI)*: A graphical desktop session (`gnome-terminal`, `xterm`, etc.).
+- **[Antigravity CLI (`agy`)](https://github.com/google/antigravity)** installed and in your `PATH` (or configured via `AGY_BINARY`).
+- *(Optional for Telegram)*: A bot token from [@BotFather](https://t.me/BotFather).
+
+---
 
 ### 2. Clone and Setup Environment
 
@@ -115,19 +140,20 @@ Chai allows you to manage software repositories, run agentic coding tasks via An
 git clone git@github.com:Imad-81/chai.git
 cd chai
 
+# 1. Setup Python virtual environment & backend dependencies
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+
+# 2. Setup Web UI dependencies
+cd web
+npm install
+cd ..
 ```
 
-### 3. Create your Telegram Bot (1 minute)
+---
 
-1. Open Telegram and search for [@BotFather](https://t.me/BotFather).
-2. Send `/newbot`, choose a friendly display name (e.g. `My Chai Assistant`) and a unique bot username (e.g. `my_chai_assistant_bot`).
-3. Copy the HTTP API bot token provided by BotFather.
-4. *(Recommended)* Find your numeric Telegram User ID using [@userinfobot](https://t.me/userinfobot) to restrict the bot exclusively to yourself.
-
-### 4. Configure Environment Variables
+### 3. Configure Environment Variables
 
 Copy `.env.example` to `.env`:
 
@@ -135,13 +161,16 @@ Copy `.env.example` to `.env`:
 cp .env.example .env
 ```
 
-Edit `.env` and set your configuration:
+Edit `.env` and adjust to your environment:
 
 ```env
-# Telegram Bot Configuration
+# Telegram Bot Configuration (Optional if using Web UI exclusively)
 TELEGRAM_BOT_TOKEN=123456789:ABCdefGhIJKlmNoPQRsTUVwxyZ
-# Restrict bot to your Telegram user ID:
+# Restrict bot to your Telegram user ID (from @userinfobot):
 TELEGRAM_ALLOWED_USERS=123456789
+
+# Network Ports
+PYTHON_WEBHOOK_PORT=5055
 
 # Ollama & Models
 OLLAMA_HOST=http://127.0.0.1:11434
@@ -161,14 +190,15 @@ AGY_TERMINAL_EMULATOR=gnome-terminal
 AGY_UI_MODE=interactive
 PROJECTS_ROOT=/home/imad/projects
 
-# Diagnostics & Webhook Port
-PYTHON_WEBHOOK_PORT=5055
+# Diagnostics
 DEBUG_MODE=false
 ```
 
-### 5. Run Offline Diagnostics & Verification
+---
 
-Validate your setup against all subsystems before starting the daemon:
+### 4. Run Offline Diagnostics & Verification
+
+Validate your local setup against all 7 subsystems:
 
 ```bash
 python3 scripts/test_pipeline.py
@@ -190,23 +220,55 @@ Expected output:
 Completed 7 diagnostic checks: 7/7 successful.
 ```
 
-### 6. Start Chai
+---
+
+### 5. Launch Chai
+
+Run the unified start script:
 
 ```bash
 ./run.sh
 ```
 
-Or directly via Python:
+Or run with Next.js development hot-reloading:
 
 ```bash
-python3 main.py
+./run.sh --dev
 ```
 
-Open Telegram, search for your bot, send `/start`, and begin chatting or sending voice memos!
+Terminal output:
+```text
+===============================================================
+☕ CHAI MULTI-SESSION AI PLATFORM (CHATGPT-STYLE PWA)
+===============================================================
+💻 Host Laptop:    http://localhost:3000
+📱 Mobile (Wi-Fi): http://192.168.1.50:3000
+⚙️ Backend Core:   http://127.0.0.1:5055
+===============================================================
+```
+
+- **Desktop Browser**: Open [http://localhost:3000](http://localhost:3000)
+- **Mobile Device**: Open `http://<YOUR_LOCAL_IP>:3000` while connected to the same Wi-Fi network. Tap **Add to Home Screen** to install as a standalone PWA.
+- **Telegram**: Search for your bot username on Telegram and send `/start`.
 
 ---
 
-## 🛠️ In-Chat Commands Reference
+## 🖥️ Chai-T Web UI Guide
+
+| Feature | Description |
+| :--- | :--- |
+| **New Chat** | Click **+ New Chat** in the sidebar to start an isolated conversation thread. |
+| **Session Continuation** | Consecutive coding prompts in the same chat session continue the existing Antigravity conversation thread without losing state. |
+| **Workspace Modal** | Click the workspace button in the sidebar or top banner to view and switch between repositories found in `PROJECTS_ROOT`. |
+| **Diagnostics Modal** | Click the activity icon or status pill to view real-time host telemetry (CPU %, RAM, disk, Ollama status, Antigravity PID). |
+| **Voice Dictation** | Click the microphone button in the composer to record audio directly from your browser. Click again to stop; Whisper transcribes the audio into the input field automatically. |
+| **Code Block Copy** | Code snippets rendered in markdown feature language tags and a 1-click clipboard copy button. |
+| **File Downloads** | Generated `.pdf` and `.docx` files render as download cards with direct file download links (`/api/files/download?path=...`). |
+| **Keyboard Shortcuts** | Press `Enter` to send; press `Shift + Enter` for a new line. |
+
+---
+
+## 🛠️ Telegram In-Chat Commands Reference
 
 | Category | Command | Description |
 | :--- | :--- | :--- |
@@ -231,38 +293,71 @@ Open Telegram, search for your bot, send `/start`, and begin chatting or sending
 
 ## 💡 Usage Scenarios & Natural Language Examples
 
-### 1. Autonomous Coding with Antigravity
+### 1. Interactive Coding with Antigravity
 Chai detects coding, debugging, refactoring, and terminal intents and dispatches them to `agy` inside the active workspace:
-- *"Fix the broken test in tests/test_memory.py"*
+- *"Fix the failing test in tests/test_memory.py"*
 - *"Run pytest and resolve any failures"*
-- *"Add docstrings and type hints to core/dispatcher.py"*
-- If `AGY_SPAWN_TERMINAL=true` and a desktop display is active, a terminal window opens on your screen rendering `agy`'s interactive TUI, allowing you to watch the agent analyze files and run commands live.
+- *"Add docstrings and type annotations to core/dispatcher.py"*
+- Follow-ups in the same session (e.g. *"Now add tests for the error cases"*) continue the active Antigravity conversation thread without resetting context.
+- If `AGY_SPAWN_TERMINAL=true` and a desktop display is active, a terminal window opens on your screen rendering `agy`'s interactive TUI.
 
-### 2. Zero-Hallucination Git & Project Inspection
+### 2. Automatic Document Delivery
+Whenever Antigravity or the PDF compiler creates or updates documentation:
+- *"Export the architecture diagram and documentation as a PDF"*
+- *"Convert README.md into a styled docx"*
+- Chai automatically detects the new `.pdf` or `.docx` file and delivers it:
+  - **On Telegram**: Sent directly as a downloadable document attachment.
+  - **On Web UI**: Rendered as an interactive download card.
+- You can also request existing documents: *"Send me the latest report.pdf"* (<0.1ms retrieval).
+
+### 3. Zero-Hallucination Git Inspection
 Ask about any local repository in natural language; Chai's `RepoInspector` intercepts the request and queries Git directly:
 - *"What was the last commit on chai?"*
 - *"Show git status for the current repo"*
-- *"List recent commits on my frontend project"*
-- *"What are my repos?"*
+- *"List recent commits on my backend project"*
+- *"What projects do I have?"*
 
-### 3. Smart Follow-ups & Pronoun Resolution
+### 4. Smart Follow-ups & Pronoun Resolution
 The dedicated `MemoryAgent` links conversational pronouns and references across turns:
 - **User**: *"Run the test suite."*
-- **Chai**: *"Ran 12 tests, 1 failed in test_auth.py: line 42 assertion error."*
+- **Chai**: *"Ran 14 tests, 1 failed in test_auth.py: line 42 assertion error."*
 - **User**: *"Fix it."* ➔ Resolved to: *"Fix the failed test in test_auth.py: line 42 assertion error"*
 - **User**: *"Why did that happen?"* ➔ Resolved to context of the test failure.
 
-### 4. Hands-Free Voice Notes
-Send a voice memo from your mobile Telegram app while away from your desk:
-1. Chai downloads the voice note and transcribes it locally using Faster-Whisper.
-2. The transcription is echoed back (*"You said: 'Switch to chai and check git status'"*).
-3. The command is routed and executed automatically.
+### 5. Hands-Free Voice Notes
+Send a voice memo from your mobile Telegram app or tap the microphone in the Web UI:
+1. Chai transcribes the audio locally using Faster-Whisper.
+2. The transcription is displayed or echoed back.
+3. The command is synthesized and executed automatically.
 
-### 5. Styled Academic & Technical PDFs
-Ask Chai to write or revise academic assignments, research reports, or essays:
-- *"Write an assignment on Raft Consensus Algorithm with architecture, state transitions, and leader election"*
+### 6. Styled Academic & Technical PDFs
+Ask Chai to generate or revise structured academic reports:
+- *"Write an assignment on the Raft Consensus Algorithm with architecture, state transitions, and leader election"*
 - *"Revise the assignment to include a comparison table with Paxos"*
-- Chai generates a structured, multi-section document, compiles it using ReportLab, and sends the `.pdf` directly to your Telegram chat.
+- Chai generates a multi-section document, compiles it using ReportLab, and sends the `.pdf` to your chat.
+
+---
+
+## 🔌 REST & SSE Web API Reference
+
+The backend exposes an asynchronous REST and Server-Sent Events API on port `5055` (proxied by Next.js at `/api/chai/*`):
+
+| Method | Endpoint | Description |
+| :--- | :--- | :--- |
+| `GET` | `/health` | Health check endpoint returning uptime and service states |
+| `GET` | `/debug/state` | System telemetry JSON (CPU %, RAM, disk space, Ollama, Antigravity) |
+| `GET` | `/debug/logs?n=50` | Stream recent plain-text log entries |
+| `GET` | `/api/sessions` | List all conversation sessions ordered by last activity |
+| `POST` | `/api/sessions` | Create a new conversation session (`{"title": "...", "workspace": "..."}`) |
+| `GET` | `/api/sessions/{session_id}` | Retrieve session details and message history |
+| `PATCH` | `/api/sessions/{session_id}` | Update session title, workspace, or Antigravity conversation UUID |
+| `DELETE` | `/api/sessions/{session_id}` | Delete a conversation session and all its messages |
+| `POST` | `/api/chat` | Send a message and receive the agent response (`{"text": "...", "session_id": "..."}`) |
+| `GET` | `/api/chat/stream?session_id=...&text=...` | Server-Sent Events (SSE) streaming endpoint for real-time status and thoughts |
+| `POST` | `/api/audio/transcribe` | Multipart audio file upload; transcribes speech using Faster-Whisper |
+| `GET` | `/api/workspaces` | List discovered project directories and active workspace |
+| `POST` | `/api/workspaces/select` | Switch active workspace repository (`{"workspace": "..."}`) |
+| `GET` | `/api/files/download?path=...` | Download generated PDF reports and document artifacts |
 
 ---
 
@@ -271,17 +366,18 @@ Ask Chai to write or revise academic assignments, research reports, or essays:
 ```
 chai/
 ├── config.py                  # Central configuration & environment variables
-├── main.py                    # Unified Telegram bot daemon & diagnostic webserver
-├── requirements.txt           # Python dependencies
-├── run.sh                     # Cleanup & launch script
+├── main.py                    # Unified daemon: HTTP API, Web API, and Telegram bot
+├── requirements.txt           # Python backend dependencies
+├── run.sh                     # Unified startup script (LAN detection, backend & web UI)
 ├── .env.example               # Template environment configuration
 ├── core/
-│   ├── agy_runner.py          # Antigravity CLI execution (Interactive TUI / Headless)
-│   ├── context_engine.py      # Grounded developer persona & dynamic prompt synthesis
-│   ├── db.py                  # SQLModel database models (Messages, Sessions, Facts, Docs)
-│   ├── debug_router.py        # In-chat diagnostic suite (/status, /ping, /debug, etc.)
+│   ├── agy_runner.py          # Antigravity CLI runner (interactive TUI / headless & continuation)
+│   ├── context_engine.py      # Grounded developer persona & autonomous task synthesis
+│   ├── db.py                  # SQLModel database models & SQLite WAL configuration
+│   ├── debug_router.py        # Diagnostic suite (/status, /ping, /debug, etc.)
 │   ├── dispatcher.py          # Intent routing & execution pipeline orchestrator
-│   ├── logger.py              # Centralized rotating file & console logging
+│   ├── file_detector.py       # Automatic .pdf/.docx detection, snapshotting & delivery
+│   ├── logger.py              # Centralized rotating file and console logging
 │   ├── memory.py              # Hierarchical memory manager (Working, Episodic, Durable)
 │   ├── memory_agent.py        # Micro-agent (Qwen 0.5B) for pronoun resolution & summarization
 │   ├── pdf_compiler.py        # ReportLab styled PDF report generator
@@ -289,12 +385,25 @@ chai/
 │   ├── telegram_bot.py        # Telegram client, in-place status tracker, command handlers
 │   ├── transcriber.py         # Faster-Whisper offline voice-to-text pipeline
 │   ├── triage.py              # Multi-tier low-latency intent classifier (Tier 0 & Tier 1)
+│   ├── web_api.py             # REST & SSE Web API routes for Chai-T Web UI
 │   └── workspace_manager.py   # Workspace context tracking & project discovery
-├── data/                      # Local sqlite db, artifacts, voice notes, logs (gitignored)
+├── web/                       # Chai-T Next.js Web Interface & Mobile PWA
+│   ├── app/                   # Next.js App Router (layout, page, global styling)
+│   ├── components/            # React UI components:
+│   │   ├── Composer.tsx       # Message input, keyboard shortcuts & voice recording
+│   │   ├── MessageList.tsx    # Markdown rendering, code highlighting & copy buttons
+│   │   ├── Sidebar.tsx        # Multi-session navigation, search & modals
+│   │   ├── SystemModal.tsx    # Live host diagnostics & telemetry modal
+│   │   └── WorkspaceModal.tsx # Project repository switcher modal
+│   ├── public/                # PWA manifest, service worker (sw.js), icons & SVGs
+│   ├── next.config.ts         # Next.js API rewrite proxy to Python backend (:5055)
+│   ├── package.json           # Next.js, React 19, Lucide, remark-gfm dependencies
+│   └── tsconfig.json          # TypeScript configuration
+├── data/                      # Local SQLite database, artifacts, voice notes, logs (gitignored)
 │   ├── assistant.db           # SQLite database
 │   ├── artifacts/             # Generated PDF documents
 │   ├── audio_temp/            # Temporary voice note storage
-│   └── logs/                  # Centralized chai.log & agy task execution runs
+│   └── logs/                  # Centralized chai.log & agy execution outputs
 ├── scripts/
 │   └── test_pipeline.py       # Offline component validation suite (7 diagnostic checks)
 └── archive/
@@ -307,8 +416,9 @@ chai/
 
 | Environment Variable | Default | Description |
 | :--- | :--- | :--- |
-| `TELEGRAM_BOT_TOKEN` | *None* | HTTP API Token obtained from [@BotFather](https://t.me/BotFather) |
+| `TELEGRAM_BOT_TOKEN` | *None* | HTTP API Token from [@BotFather](https://t.me/BotFather) (optional if using Web UI only) |
 | `TELEGRAM_ALLOWED_USERS` | *Empty* | Comma-separated list of allowed numeric Telegram user IDs (from [@userinfobot](https://t.me/userinfobot)) |
+| `PYTHON_WEBHOOK_PORT` | `5055` | Port for the local aiohttp REST & SSE backend API server |
 | `OLLAMA_HOST` | `http://127.0.0.1:11434` | URL of the local Ollama API server |
 | `DISPATCHER_MODEL` | `gemma4:12b` | Primary Ollama LLM for general conversation and task synthesis |
 | `MEMORY_RESOLVER_MODEL` | `qwen2.5:0.5b` | Lightweight Ollama model for rapid (<150ms) pronoun resolution & triage |
@@ -321,20 +431,19 @@ chai/
 | `AGY_TERMINAL_EMULATOR` | `gnome-terminal`| Preferred terminal emulator (`gnome-terminal`, `xterm`, `x-terminal-emulator`) |
 | `AGY_UI_MODE` | `interactive` | Antigravity UI mode: `interactive` (live TUI) or `headless` (subcommand output) |
 | `PROJECTS_ROOT` | `~/projects` | Parent directory scanned for software projects and repositories |
-| `PYTHON_WEBHOOK_PORT` | `5055` | Port for the local diagnostic HTTP health server |
 | `DEBUG_MODE` | `false` | Enable verbose execution timing on responses by default |
 
 ---
 
 ## 📦 Preserved WhatsApp Bridge (Archive)
 
-The original Node.js Baileys WhatsApp bridge that powered earlier versions of Chai is fully preserved in [`archive/whatsapp_bridge/`](file:///home/imad/projects/chai/archive/whatsapp_bridge/README.md). If you wish to inspect or run the WhatsApp gateway alongside the Python orchestrator:
+The original Node.js Baileys WhatsApp bridge that powered earlier versions of Chai is preserved in [`archive/whatsapp_bridge/`](archive/whatsapp_bridge/README.md). If you wish to inspect or run the WhatsApp gateway alongside the Python orchestrator:
 
 1. `cd archive/whatsapp_bridge`
 2. `npm install`
 3. `node bridge.js`
 
-See [`archive/whatsapp_bridge/README.md`](file:///home/imad/projects/chai/archive/whatsapp_bridge/README.md) for further technical details.
+See [`archive/whatsapp_bridge/README.md`](archive/whatsapp_bridge/README.md) for further technical details.
 
 ---
 
