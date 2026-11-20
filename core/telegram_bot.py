@@ -115,7 +115,7 @@ async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     welcome_text = (
         f"🤖 *Hello, {user.first_name}!*\n\n"
-        f"I am *Chai*, your personal Linux assistant powered by local Ollama & Antigravity.\n\n"
+        f"I am *Chai*, your personal AI assistant powered by local Ollama & Antigravity.\n\n"
         f"✨ *Capabilities:*\n"
         f"• 🎙️ *Voice Notes:* Send voice messages and I'll transcribe & execute them.\n"
         f"• 💻 *Coding & Terminal:* Ask me to edit code, run commands, or fix bugs with Antigravity.\n"

@@ -91,7 +91,7 @@ class ContextEngine:
 
         prompt = (
             f"You are Chai, the personal AI assistant for {cls.DEVELOPER_NAME} (GitHub: {cls.GITHUB_USERNAME}).\n"
-            f"You run locally on {cls.DEVELOPER_NAME}'s Linux computer.\n\n"
+            f"You run locally on {cls.DEVELOPER_NAME}'s computer.\n\n"
             f"Developer Environment:\n"
             f"• User: {cls.DEVELOPER_NAME} ({cls.GITHUB_USERNAME})\n"
             f"• Active Project: {ws['name']} ({ws['path']})\n"

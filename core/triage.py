@@ -3,7 +3,7 @@ import time
 import asyncio
 from typing import Dict, Any, Optional
 import ollama
-from config import DISPATCHER_MODEL, OLLAMA_HOST
+from config import DISPATCHER_MODEL, MEMORY_RESOLVER_MODEL, OLLAMA_HOST
 from core.workspace_manager import WorkspaceManager
 from core.logger import get_logger
 
@@ -20,7 +20,7 @@ FAST_GREETINGS = {
     "good afternoon": "Good afternoon! How can I help?",
     "good evening": "Good evening! What can I assist you with?",
     "how are you": "I'm running fast and ready to help! How are you doing?",
-    "who are you": "I am Chai, your personal Linux assistant powered by local AI and Antigravity.",
+    "who are you": "I am Chai, your personal AI assistant powered by local AI and Antigravity.",
     "what can you do": (
         "Here is what I can do:\n"
         "• 💻 *Coding & Terminal:* Ask me to edit code, run tests, fix bugs, or git operations.\n"
@@ -88,7 +88,7 @@ RE_PROJECTS_OVERVIEW = re.compile(
 )
 
 # Preferred lightweight router model tag
-FAST_ROUTER_MODEL = "qwen2.5:0.5b"
+FAST_ROUTER_MODEL = MEMORY_RESOLVER_MODEL
 
 class FastTriage:
     """Multi-tiered zero-latency and low-latency intent triage engine."""

@@ -6,20 +6,26 @@ from pathlib import Path
 from typing import Dict, Any, Optional
 
 from aiohttp import web
+import httpx
+import psutil
+import shutil
 from config import (
     DATA_DIR,
     AUDIO_DIR,
     ARTIFACTS_DIR,
     PROJECTS_ROOT,
     WHISPER_MODEL_SIZE,
-    OLLAMA_HOST
+    OLLAMA_HOST,
+    DISPATCHER_MODEL,
+    MEMORY_RESOLVER_MODEL,
+    TELEGRAM_BOT_TOKEN
 )
 from core.memory import MemoryManager
 from core.dispatcher import Dispatcher
 from core.transcriber import VoiceTranscriber
 from core.workspace_manager import WorkspaceManager
 from core.agy_runner import AntigravityRunner
-from core.logger import get_logger
+from core.logger import get_logger, tail_logs
 
 logger = get_logger("web_api")
 
@@ -419,6 +425,79 @@ async def handle_download_file(request: web.Request):
 
     return web.FileResponse(fpath, headers=cors_headers())
 
+async def handle_debug_state(request: web.Request):
+    """Detailed JSON diagnostic state endpoint."""
+    cpu_pct = psutil.cpu_percent(interval=None)
+    mem = psutil.virtual_memory()
+    total, used, free = shutil.disk_usage(DATA_DIR)
+
+    ollama_info = {"status": "offline", "models": []}
+    try:
+        async with httpx.AsyncClient(timeout=2.0) as client:
+            res = await client.get(f"{OLLAMA_HOST}/api/tags")
+            if res.status_code == 200:
+                models = [m.get("name") for m in res.json().get("models", [])]
+                ollama_info = {"status": "online", "models": models}
+    except Exception:
+        pass
+
+    return web.json_response({
+        "cpuPercent": cpu_pct,
+        "ram": {
+            "usedGb": round(mem.used / (1024 ** 3), 2),
+            "totalGb": round(mem.total / (1024 ** 3), 2),
+            "percent": mem.percent
+        },
+        "disk": {
+            "freeGb": round(free / (1024 ** 3), 2),
+            "totalGb": round(total / (1024 ** 3), 2)
+        },
+        "activeWorkspace": MemoryManager.get_active_workspace(),
+        "activeWorkspaceName": Path(MemoryManager.get_active_workspace()).name,
+        "models": {
+            "dispatcher": DISPATCHER_MODEL,
+            "memory": MEMORY_RESOLVER_MODEL,
+            "challenge": "Lighter tasks: qwen3.5:2b (active: qwen3.5:4b) | Heavier tasks: agy + qwen3.5:4b"
+        },
+        "ollama": ollama_info,
+        "antigravity": AntigravityRunner.get_status(),
+        "whisperModel": WHISPER_MODEL_SIZE,
+        "telegram": {
+            "configured": bool(TELEGRAM_BOT_TOKEN)
+        }
+    }, headers=cors_headers())
+
+async def handle_debug_logs(request: web.Request):
+    """Returns recent log lines as JSON."""
+    count = 100
+    try:
+        count = int(request.query.get("n", 100))
+    except ValueError:
+        pass
+    lines = tail_logs(count)
+    return web.json_response({"lines": lines, "count": len(lines)}, headers=cors_headers())
+
+async def handle_agy_kill(request: web.Request):
+    """POST /api/agy/kill: Terminates active Antigravity CLI process directly from UI."""
+    killed, msg = AntigravityRunner.kill_active()
+    return web.json_response({
+        "status": "ok" if killed else "idle",
+        "message": msg
+    }, headers=cors_headers())
+
+async def handle_run_diagnostics(request: web.Request):
+    """POST /api/diagnostics/run: Triggers offline diagnostic pipeline and returns results to UI."""
+    from scripts.test_pipeline import run_diagnostics
+    logger.info("Executing diagnostic test suite on request from UI...")
+    results = await run_diagnostics()
+    passed = sum(1 for r in results if r["status"] == "pass")
+    return web.json_response({
+        "status": "ok",
+        "passed": passed,
+        "total": len(results),
+        "results": results
+    }, headers=cors_headers())
+
 def register_web_routes(app: web.Application):
     """Registers all Web UI API routes onto the aiohttp application."""
     # OPTIONS handler for CORS preflight
@@ -444,5 +523,11 @@ def register_web_routes(app: web.Application):
 
     # File Downloads
     app.router.add_get("/api/files/download", handle_download_file)
+
+    # UI Diagnostics, Process Management & Logs
+    app.router.add_get("/api/debug/state", handle_debug_state)
+    app.router.add_get("/api/debug/logs", handle_debug_logs)
+    app.router.add_post("/api/agy/kill", handle_agy_kill)
+    app.router.add_post("/api/diagnostics/run", handle_run_diagnostics)
 
     logger.info("Registered Chai Web UI REST & SSE routes on /api/*")

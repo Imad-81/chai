@@ -587,11 +587,18 @@ read -t 15 -n 1 -s
             last_status_time = time.time()
 
             async def read_stream():
+                nonlocal last_status_time
                 while True:
                     line = await process.stdout.readline()
                     if not line:
                         break
-                    stdout_chunks.append(line.decode("utf-8", errors="replace"))
+                    decoded = line.decode("utf-8", errors="replace")
+                    stdout_chunks.append(decoded)
+                    if status_callback and time.time() - last_status_time > 0.8:
+                        clean = decoded.strip()
+                        if clean and not (clean.startswith("{") or clean.endswith("}")):
+                            status_callback(f"⚡ agy: {clean[:90]}")
+                            last_status_time = time.time()
 
             stderr_chunks = []
             async def read_stderr():

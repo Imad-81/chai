@@ -16,7 +16,7 @@ from core.file_detector import FileDetector
 
 logger = get_logger("dispatcher")
 
-SYSTEM_ROUTER_PROMPT = """You are an intelligent triage agent for a personal Linux assistant.
+SYSTEM_ROUTER_PROMPT = """You are an intelligent triage agent for a personal AI assistant.
 The user is messaging you from Telegram.
 Available projects on this computer: {projects_list}
 Active workspace: {active_workspace}
@@ -38,6 +38,23 @@ Respond ONLY with a valid JSON object matching one of the schemas above. No prea
 from core.triage import FastTriage
 from core.context_engine import ContextEngine
 from core.memory_agent import MemoryAgent
+
+def _extract_clean_response(msg_obj: Any) -> str:
+    """Extracts clean response text from Ollama message, stripping internal thinking tokens."""
+    content = (msg_obj.get('content') if isinstance(msg_obj, dict) else getattr(msg_obj, 'content', '')) or ''
+    content = re.sub(r"<think>.*?</think>", "", str(content), flags=re.DOTALL).strip()
+    if content:
+        return content
+
+    thinking = (msg_obj.get('thinking') if isinstance(msg_obj, dict) else getattr(msg_obj, 'thinking', '')) or ''
+    if thinking:
+        t_str = str(thinking).strip()
+        match = re.search(r"(?:Final Decision|Response|Output|Conclusion):\s*(.*)", t_str, re.DOTALL | re.IGNORECASE)
+        if match and match.group(1).strip():
+            return match.group(1).strip()
+        paras = [p.strip() for p in t_str.split("\n\n") if p.strip()]
+        return paras[-1] if paras else t_str
+    return ""
 
 class Dispatcher:
     @classmethod
@@ -286,14 +303,10 @@ Guidelines:
             ollama.chat,
             model=DISPATCHER_MODEL,
             messages=[{"role": "user", "content": doc_prompt}],
-            options={"temperature": 0.4, "num_predict": 1024, "num_ctx": 4096}
+            options={"temperature": 0.4, "num_predict": 2048, "num_ctx": 4096}
         )
         msg_obj = doc_res.get('message', {})
-        markdown_content = (msg_obj.get('content') or getattr(msg_obj, 'content', '') or '').strip()
-        if not markdown_content:
-            thinking = getattr(msg_obj, 'thinking', None) or (msg_obj.get('thinking') if isinstance(msg_obj, dict) else None)
-            if thinking:
-                markdown_content = str(thinking).strip()
+        markdown_content = _extract_clean_response(msg_obj)
 
         if status_updater:
             status_updater("📄 Compiling PDF document with styling...")
@@ -353,14 +366,10 @@ Output the complete revised markdown text."""
             ollama.chat,
             model=DISPATCHER_MODEL,
             messages=[{"role": "user", "content": revise_prompt}],
-            options={"temperature": 0.3, "num_predict": 1024, "num_ctx": 4096}
+            options={"temperature": 0.3, "num_predict": 2048, "num_ctx": 4096}
         )
         msg_obj = rev_res.get('message', {})
-        revised_markdown = (msg_obj.get('content') or getattr(msg_obj, 'content', '') or '').strip()
-        if not revised_markdown:
-            thinking = getattr(msg_obj, 'thinking', None) or (msg_obj.get('thinking') if isinstance(msg_obj, dict) else None)
-            if thinking:
-                revised_markdown = str(thinking).strip()
+        revised_markdown = _extract_clean_response(msg_obj)
 
         new_version = latest.version + 1
         new_pdf_path = PDFCompiler.compile_markdown_to_pdf(
@@ -415,16 +424,12 @@ Output the complete revised markdown text."""
             messages=chat_messages,
             options={
                 "temperature": 0.4,
-                "num_predict": 768,
+                "num_predict": 1536,
                 "num_ctx": 4096
             }
         )
         msg_obj = chat_res.get('message', {})
-        reply = (msg_obj.get('content') or getattr(msg_obj, 'content', '') or '').strip()
-        if not reply:
-            thinking = getattr(msg_obj, 'thinking', None) or (msg_obj.get('thinking') if isinstance(msg_obj, dict) else None)
-            if thinking:
-                reply = str(thinking).strip()
+        reply = _extract_clean_response(msg_obj)
         return cls._format_result({"type": "text", "text": reply}, "CHAT", pipeline_start)
 
     @classmethod
